@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - mainline
     tags:
       - "v*"
     paths-ignore:
@@ -12,6 +13,7 @@ on:
   pull_request:
     branches:
       - main
+      - mainline
     paths-ignore:
       - '**.md'
       - '**.yml'
