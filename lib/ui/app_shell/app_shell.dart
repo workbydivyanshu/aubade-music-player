@@ -282,7 +282,7 @@ class _WaveShellState extends ConsumerState<WaveShell> {
       if (context.canPop()) {
         context.pop();
       } else {
-        context.go('/home');
+        context.go('/songs');
       }
       return true;
     }

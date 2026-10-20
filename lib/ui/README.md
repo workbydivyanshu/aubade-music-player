@@ -8,9 +8,7 @@
 //   lib/ui/player_dock/  integrated bottom dock
 //   lib/ui/queue/        contextual queue panel
 //   lib/ui/lyrics/       premium lyrics reader
-//   lib/ui/home/         editorial home
 //   lib/ui/search/       categorized search
-//   lib/ui/library/      library home
 //   lib/ui/collections/  albums / artists / playlists / detail / liked /
 //                        downloads / history
 //   lib/ui/now_playing/  two-region now playing

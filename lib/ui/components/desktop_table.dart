@@ -45,7 +45,7 @@ enum WaveSortDir { asc, desc }
 ///   single tap focuses/selects, double-click plays, right-click menu.
 /// - Playing row: animated [WaveEqDots] + accent title; durations tabular.
 ///
-/// Home / Discover / Collections render their track lists through this so
+/// Collections render their track lists through this so
 /// density, truncation and keyboard behaviour stay identical everywhere.
 class WaveDesktopTable<T extends Object> extends ConsumerStatefulWidget {
   final List<T> items;

@@ -38,7 +38,7 @@ class WaveQueuePanel extends ConsumerWidget {
       return _Shell(
         onClose: onClose,
         embedded: embedded,
-        child: WaveQueueEmpty(onBrowse: () => context.go('/home')),
+        child: WaveQueueEmpty(onBrowse: () => context.go('/songs')),
       );
     }
     final current =

@@ -125,9 +125,9 @@ class _WaveNowPlayingPageState extends ConsumerState<WaveNowPlayingPage> {
             icon: WaveIcons.music,
             title: 'Nothing playing',
             subtitle:
-                'Pick something from Home, Discover or Search and it will take centre stage here.',
+                'Pick something from your library or Search and it will take centre stage here.',
             actionLabel: 'Browse music',
-            onAction: () => context.go('/home'),
+            onAction: () => context.go('/songs'),
           ),
         ),
       );
@@ -176,7 +176,7 @@ class _WaveNowPlayingPageState extends ConsumerState<WaveNowPlayingPage> {
             if (context.canPop()) {
               context.pop();
             } else {
-              context.go('/home');
+              context.go('/songs');
             }
           }
         },
@@ -229,7 +229,7 @@ class _WaveNowPlayingPageState extends ConsumerState<WaveNowPlayingPage> {
                                 if (context.canPop()) {
                                   context.pop();
                                 } else {
-                                  context.go('/home');
+                                  context.go('/songs');
                                 }
                               },
                             ),

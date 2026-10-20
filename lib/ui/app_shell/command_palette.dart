@@ -38,7 +38,7 @@ Future<void> showWaveSpotlight(
   required ValueChanged<String> onGo,
 }) {
   final routes = <(String path, String label, IconData icon)>[
-    (('/home'), 'Go to Home', FluentIcons.home),
+    (('/songs'), 'Go to Songs', WaveIcons.music),
     (('/search'), 'Go to Search', FluentIcons.search),
     (('/liked'), 'Go to Liked Songs', FluentIcons.heart),
     (('/albums'), 'Go to Albums', FluentIcons.music_note),

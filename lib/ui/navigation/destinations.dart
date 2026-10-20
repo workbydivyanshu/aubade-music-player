@@ -5,7 +5,6 @@ import '../theme/wave_icons.dart';
 /// Rebuilt navigation — music first, panels secondary.
 ///
 /// Layout:
-/// - Top: Home / Discover / Search (daily music use)
 /// - Library: Songs / Albums / Artists / Search
 /// - Middle: Vault / Playlists / Liked (your stats + collections)
 /// - Then: Downloads

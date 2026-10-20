@@ -16,8 +16,6 @@ import '../ui/collections/playlist_detail_page.dart';
 import '../ui/collections/playlists_page.dart';
 import '../ui/collections/songs_page.dart';
 import '../ui/collections/yt_playlist_detail_page.dart';
-import '../ui/discover/discover_page.dart';
-import '../ui/home/home_page.dart';
 import '../ui/lyrics/lyrics_screen.dart';
 import '../ui/misc/support_pages.dart';
 import '../ui/now_playing/now_playing_page.dart';
@@ -57,15 +55,14 @@ Page<void> _page(Widget child) {
 /// straight into the library at `/songs` — no account or keys required.
 /// [AuthGate] is kept only as go_router's `refreshListenable` (so
 /// sign-in/out re-evaluates the current route), never as a gate, and
-/// the redirect below only maps the legacy `/` and `/home` entries onto
-/// `/songs`.
+/// the redirect below only maps the legacy `/` entry onto `/songs`.
 ///
 /// `/welcome` remains a reachable manual route (the sign-out path),
 /// rendered WITHOUT the main shell — but nothing routes users there
 /// automatically.
 ///
-/// Home / Discover / Search · Library / Liked / Albums / Artists /
-/// Playlists · Downloads · Friends / Settings · Now / Lyrics ·
+/// Search · Library / Liked / Albums / Artists / Playlists · Downloads ·
+/// Friends / Settings · Now / Lyrics ·
 ///
 /// Album / Artist details are first-class music layouts.
 /// History + Mix Lab stay routable but off prime nav.
@@ -75,7 +72,7 @@ GoRouter buildRouter({required AuthGate gate}) {
     refreshListenable: gate,
     redirect: (context, state) {
       final path = state.uri.path;
-      if (path == '/' || path == '/home') return '/songs';
+      if (path == '/') return '/songs';
       return null;
     },
     routes: [
@@ -92,16 +89,6 @@ GoRouter buildRouter({required AuthGate gate}) {
           child: child,
         ),
         routes: [
-          GoRoute(
-            path: '/home',
-            pageBuilder: (c, s) =>
-                _page(const WaveHomePage()),
-          ),
-          GoRoute(
-            path: '/discover',
-            pageBuilder: (c, s) =>
-                _page(const WaveDiscoverPage()),
-          ),
           GoRoute(
             path: '/search',
             pageBuilder: (c, s) => _page(WaveSearchPage(

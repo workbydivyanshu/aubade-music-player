@@ -48,8 +48,8 @@ final ytAccountProvider = FutureProvider<YtAccount?>((ref) async {
 ///
 /// Only fetched when connected: the whole point of the home browse is
 /// the personalized "For you" surface, and an anonymous call returns
-/// generic trending shelves that would just duplicate Discover. Empty
-/// on any failure, so the Home page simply omits the section.
+/// generic trending shelves instead of the personalized surface. Empty
+/// on any failure, so the caller simply omits the section.
 final ytHomeShelvesProvider =
     FutureProvider<List<YtHomeShelf>>((ref) async {
   if (!ref.watch(ytConnectionProvider).connected) {
