@@ -1,0 +1,5839 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+
+import 'package:crypto/crypto.dart';
+import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:unorm_dart/unorm_dart.dart' as unorm;
+
+import '../../core/audio/stream_models.dart';
+import '../../core/matching/match_vocab.dart';
+import '../../core/network/dio_factory.dart';
+import '../../core/storage/app_database.dart';
+import '../../core/storage/secure_store.dart';
+import '../search/shared_providers.dart';
+import '../player/play_diag.dart';
+import 'signature_decipher.dart';
+
+/// Structured stream debug log. Mirrors Android `STREAM_LOG_TAG`
+/// fields (stage/videoId/client/itag/mime/expiry/retry/http).
+/// NEVER logs URLs, cookies, tokens or auth headers.
+void _logStream(
+  String stage, {
+  String videoId = '',
+  String client = '',
+  int itag = -1,
+  String mime = '',
+  String expiry = 'unknown',
+  int retry = 0,
+  int http = 0,
+  String detail = '',
+}) {
+  if (!kDebugMode) return;
+  final d = detail.length > 80 ? detail.substring(0, 80) : detail;
+  debugPrint(
+      'AubadeStream stage=$stage videoId=$videoId client=$client '
+      'itag=$itag mime=$mime expiry=$expiry retry=$retry http=$http $d');
+}
+
+class InnerTubeHttpException implements Exception {
+  final int responseCode;
+  InnerTubeHttpException(this.responseCode);
+  @override
+  String toString() => 'InnerTube HTTP $responseCode';
+}
+
+class ConfirmedUnplayableMediaException implements Exception {
+  final String message;
+  ConfirmedUnplayableMediaException(this.message);
+  @override
+  String toString() => 'ConfirmedUnplayable: $message';
+}
+
+class NoReliableMatchException implements Exception {
+  final String message;
+  NoReliableMatchException(this.message);
+  @override
+  String toString() => message;
+}
+
+/// YouTube Music / InnerTube client â€” Android parity port.
+///
+/// Behaviour mirrors Kotlin LastWave `InnerTubeMusicApi`:
+/// same endpoints, client table, headers, auth gating, parsing,
+/// matching, player strategy, probing, caching, retries and
+/// cooldowns. Two deliberate desktop adaptations:
+/// - signature decipher is pure Dart (base.js) instead of NewPipe.
+/// - poToken minting (Android WebView BotGuard) is unavailable, so
+///   requests proceed without it â€” the same fail-open path Android
+///   takes when minting fails.
+class YouTubeMusicTrack {
+  final String videoId;
+  final String title;
+  final String artist;
+  final String album;
+  final String artworkUrl;
+  final int durationSeconds;
+
+  const YouTubeMusicTrack({
+    required this.videoId,
+    required this.title,
+    required this.artist,
+    this.album = '',
+    this.artworkUrl = '',
+    this.durationSeconds = 0,
+  });
+}
+
+enum YouTubeEntityKind { artist, album, playlist, mix }
+
+class YouTubeMusicEntity {
+  final YouTubeEntityKind kind;
+  final String name;
+  final String artist;
+  final String subtitle;
+  final String browseId;
+  final String playlistId;
+  final String artworkUrl;
+
+  const YouTubeMusicEntity({
+    required this.kind,
+    required this.name,
+    this.artist = '',
+    this.subtitle = '',
+    this.browseId = '',
+    this.playlistId = '',
+    this.artworkUrl = '',
+  });
+}
+
+/// One titled shelf from the YouTube Music home browse.
+///
+/// YTM home mixes two shapes under a single flat section list:
+/// `musicShelfRenderer` holds song rows, `musicCarouselShelfRenderer`
+/// holds two-row cards (albums, playlists, mixes). They are kept in
+/// separate lists rather than one `items` list so the UI can render
+/// rows vs cards without re-sniffing the payload, and so a shelf that
+/// yields neither is dropped instead of rendering an empty header.
+class YtHomeShelf {
+  final String title;
+
+  /// Secondary line when the header carries one (carousel shelves
+  /// often do not).
+  final String subtitle;
+
+  /// Song rows - populated for `musicShelfRenderer`.
+  final List<YouTubeMusicTrack> tracks;
+
+  /// Song cards - populated for `musicCarouselShelfRenderer` items
+  /// that point at a watch endpoint (a video) rather than a browse
+  /// endpoint (an album/artist/playlist). "Listen again"-style
+  /// carousels are songs, not entities: treating them as albums
+  /// navigates to `/album/<videoId>` and dies on Empty album.
+  final List<YouTubeMusicTrack> trackCards;
+
+  /// Two-row cards - populated for `musicCarouselShelfRenderer`.
+  final List<YouTubeMusicEntity> entities;
+
+  const YtHomeShelf({
+    required this.title,
+    this.subtitle = '',
+    this.tracks = const [],
+    this.trackCards = const [],
+    this.entities = const [],
+  });
+
+  bool get isTrackShelf => tracks.isNotEmpty;
+  bool get isTrackCardShelf => trackCards.isNotEmpty;
+  bool get isCardShelf => entities.isNotEmpty;
+  bool get isRenderable =>
+      isTrackShelf || isTrackCardShelf || isCardShelf;
+}
+
+class YouTubePlaylistResult {
+  final String id;
+  final String title;
+  final String author;
+  final String artworkUrl;
+  final int trackCount;
+  final List<YouTubeMusicTrack> tracks;
+
+  const YouTubePlaylistResult({
+    required this.id,
+    required this.title,
+    this.author = '',
+    this.artworkUrl = '',
+    this.trackCount = 0,
+    this.tracks = const [],
+  });
+}
+
+/// Album browse result: page header metadata plus its tracks.
+///
+/// Album track rows omit per-track artist/album/artwork (they are
+/// implied by the header), so [browseAlbum] inherits those fields
+/// onto every track that lacks them.
+class YouTubeAlbumResult {
+  final String browseId;
+  final String title;
+  final String artist;
+  final String artworkUrl;
+  final String year;
+  final List<YouTubeMusicTrack> tracks;
+
+  const YouTubeAlbumResult({
+    required this.browseId,
+    required this.title,
+    this.artist = '',
+    this.artworkUrl = '',
+    this.year = '',
+    this.tracks = const [],
+  });
+}
+
+class YouTubePlaylistSummary {
+  final String id;
+  final String title;
+  final String author;
+  final String trackCountText;
+  final String artworkUrl;
+
+  const YouTubePlaylistSummary({
+    required this.id,
+    required this.title,
+    this.author = '',
+    this.trackCountText = '',
+    this.artworkUrl = '',
+  });
+}
+
+/// Signed-in Google account identity (best-effort: any field may be
+/// empty when YouTube omits it). [handle] is the real @handle parsed
+/// from the `channelHandle` node (any shape, else subtree scan);
+/// [email] is the Google account address and roster key.
+class YtAccount {
+  final String name;
+  final String handle;
+  final String email;
+  final String photoUrl;
+
+  const YtAccount({
+    this.name = '',
+    this.handle = '',
+    this.email = '',
+    this.photoUrl = '',
+  });
+
+  bool get isEmpty =>
+      name.isEmpty && handle.isEmpty && photoUrl.isEmpty;
+}
+
+class _AccountCacheEntry {
+  final YtAccount account;
+  final DateTime at;
+  const _AccountCacheEntry(this.account, this.at);
+}
+
+/// Authenticated YTM connection (raw cookie header + identity).
+///
+/// [profileEmail] keys the owning Google login in the roster;
+/// [activePageId] selects its channel: '' = main channel (no header),
+/// otherwise the 21-digit brand page ID from
+/// `ytcfg.data_.DELEGATED_SESSION_ID`, routed per-request via
+/// `X-Goog-PageId`.
+class YtConnection {
+  final bool connected;
+  final String cookies;
+  final String accountName;
+  final String channelHandle;
+  final String photoUrl;
+  final int connectedAtMillis;
+  final String profileEmail;
+  final String activePageId;
+
+  const YtConnection({
+    this.connected = false,
+    this.cookies = '',
+    this.accountName = '',
+    this.channelHandle = '',
+    this.photoUrl = '',
+    this.connectedAtMillis = 0,
+    this.profileEmail = '',
+    this.activePageId = '',
+  });
+}
+
+/// One selectable YouTube identity: a Google account's main channel
+/// (`pageId` empty) or one of its brand channels. Brand routing is
+/// per-request ([YtConnection.activePageId] → `X-Goog-PageId`), so
+/// channels share their profile's cookie jar.
+class YtChannel {
+  final String pageId;
+  final String name;
+  final String handle;
+  final String photoUrl;
+
+  const YtChannel({
+    this.pageId = '',
+    this.name = '',
+    this.handle = '',
+    this.photoUrl = '',
+  });
+
+  bool get isMain => pageId.isEmpty;
+
+  Map<String, dynamic> toJson() => {
+        'pageId': pageId,
+        'name': name,
+        'handle': handle,
+        'photoUrl': photoUrl,
+      };
+
+  factory YtChannel.fromJson(Map<String, dynamic> json) =>
+      YtChannel(
+        pageId: json['pageId']?.toString() ?? '',
+        name: json['name']?.toString() ?? '',
+        handle: json['handle']?.toString() ?? '',
+        photoUrl: json['photoUrl']?.toString() ?? '',
+      );
+}
+
+/// One Google login: its cookie jar plus its channels. Roster key is
+/// the account email (stable per Google login); channels key by page
+/// ID (`''` for the main channel).
+class YtProfile {
+  final String email;
+  final String cookies;
+  final List<YtChannel> channels;
+  final String activePageId;
+  final int lastUsedMillis;
+
+  const YtProfile({
+    required this.email,
+    this.cookies = '',
+    this.channels = const [],
+    this.activePageId = '',
+    this.lastUsedMillis = 0,
+  });
+
+  YtProfile copyWith({
+    String? cookies,
+    List<YtChannel>? channels,
+    String? activePageId,
+    int? lastUsedMillis,
+  }) =>
+      YtProfile(
+        email: email,
+        cookies: cookies ?? this.cookies,
+        channels: channels ?? this.channels,
+        activePageId: activePageId ?? this.activePageId,
+        lastUsedMillis:
+            lastUsedMillis ?? this.lastUsedMillis,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'email': email,
+        'cookies': cookies,
+        'channels': channels.map((c) => c.toJson()).toList(),
+        'activePageId': activePageId,
+        'lastUsedMillis': lastUsedMillis,
+      };
+
+  factory YtProfile.fromJson(Map<String, dynamic> json) {
+    final rawChannels = json['channels'];
+    return YtProfile(
+      email: json['email']?.toString() ?? '',
+      cookies: json['cookies']?.toString() ?? '',
+      channels: rawChannels is List
+          ? rawChannels
+              .whereType<Map<String, dynamic>>()
+              .map(YtChannel.fromJson)
+              .toList()
+          : const [],
+      activePageId:
+          json['activePageId']?.toString() ?? '',
+      lastUsedMillis:
+          (json['lastUsedMillis'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  static List<YtProfile> listFromJson(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded
+            .whereType<Map<String, dynamic>>()
+            .map(YtProfile.fromJson)
+            // Keep provisional entries (email scrubbed to '' by the
+            // repair pass) as long as they still hold a jar — they
+            // re-key on the next successful identity resolve.
+            .where(
+                (p) => p.email.isNotEmpty || p.cookies.isNotEmpty)
+            .toList();
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  static String listToJson(List<YtProfile> profiles) =>
+      jsonEncode(profiles.map((p) => p.toJson()).toList());
+}
+
+class PlayerClient {
+  final String name;
+  final String version;
+  final String apiKey;
+  final String userAgent;
+  final String? osName;
+  final String? osVersion;
+  final String? deviceMake;
+  final String? deviceModel;
+  final String? androidSdkVersion;
+
+  const PlayerClient(
+    this.name,
+    this.version,
+    this.apiKey,
+    this.userAgent, {
+    this.osName,
+    this.osVersion,
+    this.deviceMake,
+    this.deviceModel,
+    this.androidSdkVersion,
+  });
+
+  String get key => '$name@$version';
+
+  String get origin => name == 'WEB_REMIX'
+      ? InnerTubeMusicApi.musicOrigin
+      : InnerTubeMusicApi.youtubeOrigin;
+
+  String get referer {
+    switch (name) {
+      case 'WEB_REMIX':
+        return '${InnerTubeMusicApi.musicOrigin}/';
+      case 'TVHTML5':
+      case 'TVHTML5_SIMPLY_EMBEDDED_PLAYER':
+        return '${InnerTubeMusicApi.youtubeOrigin}/tv';
+      case 'WEB_EMBEDDED_PLAYER':
+        return '${InnerTubeMusicApi.youtubeOrigin}/embed';
+      default:
+        return '${InnerTubeMusicApi.youtubeOrigin}/';
+    }
+  }
+
+  Map<String, String> get streamRequestHeaders {
+    final headers = {
+      'User-Agent': userAgent,
+      'X-YouTube-Client-Name':
+          InnerTubeMusicApi.clientIds[name] ?? name,
+      'X-YouTube-Client-Version': version,
+    };
+    if (name == 'WEB_REMIX' ||
+        name == 'TVHTML5' ||
+        name == 'TVHTML5_SIMPLY_EMBEDDED_PLAYER' ||
+        name == 'WEB_EMBEDDED_PLAYER' ||
+        name == 'MWEB') {
+      headers['Origin'] = origin;
+      headers['Referer'] = referer;
+    }
+    return headers;
+  }
+}
+
+class _CachedStream {
+  final ResolvedStream stream;
+  final String clientProfile;
+  final int itag;
+  final bool adaptive;
+  final String authScope;
+  final DateTime cachedAt;
+  _CachedStream(
+    this.stream,
+    this.clientProfile,
+    this.itag,
+    this.adaptive,
+    this.authScope,
+    this.cachedAt,
+  );
+}
+
+class InnerTubeMusicApi {
+  // -- endpoints ---------------------------------------------------------
+  static const String musicApi =
+      'https://music.youtube.com/youtubei/v1';
+  static const String youtubeApi =
+      'https://www.youtube.com/youtubei/v1';
+  static const String musicOrigin = 'https://music.youtube.com';
+  static const String youtubeOrigin = 'https://www.youtube.com';
+  static const String webUserAgent =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) '
+      'Gecko/20100101 Firefox/140.0';
+
+  static const String fallbackWebKey =
+      'AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30';
+  static const String fallbackWebVersion = '1.20260707.12.00';
+
+  static const String libraryPlaylistsBrowseId =
+      'FEmusic_liked_playlists';
+  static const String historyBrowseId = 'FEmusic_history';
+  static const String likedBrowseId = 'VLLM';
+  static const String homeBrowseId = 'FEmusic_home';
+  static const String newReleasesBrowseId =
+      'FEmusic_new_releases';
+  static const String chartsBrowseId = 'FEmusic_charts';
+
+  static const String songsSearchFilter =
+      'EgWKAQIIAWoKEAkQBRAKEAMQBA==';
+  static const String artistSearchFilter =
+      'EgWKAQIgAWoKEAkQBRAKEAMQBA==';
+  static const String albumSearchFilter =
+      'EgWKAQIYAWoKEAkQBRAKEAMQBA==';
+  static const String playlistSearchFilter =
+      'Eg-KAQwIABAAGAAgACgB';
+
+  static const Map<String, String> clientIds = {
+    'WEB_REMIX': '67',
+    'IOS': '5',
+    'IOS_MUSIC': '26',
+    'IOS_CREATOR': '15',
+    'ANDROID': '3',
+    'ANDROID_MUSIC': '21',
+    'ANDROID_VR': '28',
+    'ANDROID_TESTSUITE': '30',
+    'ANDROID_CREATOR': '14',
+    'TVHTML5': '7',
+    'TVHTML5_SIMPLY_EMBEDDED_PLAYER': '85',
+    'VISIONOS': '101',
+    'WEB_EMBEDDED_PLAYER': '56',
+    'MWEB': '62',
+  };
+
+  static const List<PlayerClient> playerClients = [
+    // Limusic fast order: direct-URL clients first (no cipher/poToken),
+    // ciphered web clients last. The resolver tries VISIONOS alone
+    // first, then at most 2 more fallbacks — never the full table.
+    PlayerClient(
+      'VISIONOS',
+      '0.1',
+      'AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15',
+      osName: 'visionOS',
+      osVersion: '1.3.21O771',
+      deviceMake: 'Apple',
+      deviceModel: 'RealityDevice14,1',
+    ),
+    PlayerClient(
+      'ANDROID_VR',
+      '1.65.10',
+      'AIzaSyD-p045F_WzU-vA_YgX20SCx4KAo',
+      'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
+      osName: 'Android',
+      osVersion: '12L',
+      deviceMake: 'Oculus',
+      deviceModel: 'Quest 3',
+      androidSdkVersion: '32',
+    ),
+    PlayerClient(
+      'ANDROID_TESTSUITE',
+      '1.9',
+      'AIzaSyD-p045F_WzU-vA_YgX20SCx4KAo',
+      'com.google.android.youtube/1.9 (Linux; U; Android 12) gzip',
+      osName: 'Android',
+      osVersion: '12',
+    ),
+    PlayerClient(
+      'ANDROID_MUSIC',
+      '7.27.52',
+      'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w',
+      'com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 14; en_US; Pixel 8; Build/UD1A.230803.041) gzip',
+      osName: 'Android',
+      osVersion: '14',
+      deviceMake: 'Google',
+      deviceModel: 'Pixel 8',
+      androidSdkVersion: '34',
+    ),
+    PlayerClient(
+      'IOS_MUSIC',
+      '7.27.0',
+      'AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc',
+      'com.google.ios.youtubemusic/7.27.0 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)',
+      osName: 'iOS',
+      osVersion: '17.5.1.21F90',
+      deviceMake: 'Apple',
+      deviceModel: 'iPhone16,2',
+    ),
+    PlayerClient(
+      'TVHTML5',
+      '7.20260308.08.00',
+      'AIzaSyAO_FJ2SlqAz8GlBg1fA54p0wDE7Xk80mU',
+      'Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/4.0 Chrome/76.0.3809.146 TV Safari/537.36',
+    ),
+    PlayerClient(
+      'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+      '2.0',
+      'AIzaSyAO_FJ2SlqAz8GlBg1fA54p0wDE7Xk80mU',
+      'Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/4.0 Chrome/76.0.3809.146 TV Safari/537.36',
+    ),
+    PlayerClient(
+      'IOS',
+      '21.26.4',
+      'AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc',
+      'com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2;)',
+      osName: 'iPhone',
+      osVersion: '18.3.2.22D82',
+      deviceMake: 'Apple',
+      deviceModel: 'iPhone16,2',
+    ),
+    PlayerClient(
+      'ANDROID',
+      '21.26.364',
+      'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w',
+      'com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip',
+      osName: 'Android',
+      osVersion: '11',
+    ),
+    PlayerClient(
+      'ANDROID_CREATOR',
+      '24.32.100',
+      'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w',
+      'com.google.android.apps.youtube.creator/24.32.100 (Linux; U; Android 13; en_US) gzip',
+      osName: 'Android',
+      osVersion: '13',
+    ),
+    PlayerClient(
+      'IOS_CREATOR',
+      '24.32.100',
+      'AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc',
+      'com.google.ios.creator/24.32.100 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)',
+      osName: 'iOS',
+      osVersion: '17.5.1.21F90',
+    ),
+    PlayerClient(
+      'WEB_REMIX',
+      fallbackWebVersion,
+      'AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30',
+      webUserAgent,
+    ),
+    PlayerClient(
+      'WEB_EMBEDDED_PLAYER',
+      fallbackWebVersion,
+      'AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30',
+      webUserAgent,
+    ),
+    PlayerClient(
+      'MWEB',
+      '2.20260707.01.00',
+      'AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30',
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+    ),
+  ];
+
+  // -- matching tables (mirror Android companion TextMatch) --------------------
+  // Variant words live in [MatchVocab] (shared with the addon matcher);
+  // the rest mirrors Kotlin LastWave `TextMatch` exactly. Desktop-only
+  // additions are marked.
+  static final RegExp _nonWord =
+      RegExp(r'[^\p{L}\p{N}]+', unicode: true);
+  static final RegExp _diacritics = RegExp(r'\p{M}+', unicode: true);
+  static final RegExp _multiSpace = RegExp(r'\s+');
+  static const Set<String> _variantWords = MatchVocab.versionWords;
+  static const Set<String> _matchNoiseWords = {
+    'official', 'audio', 'video', 'visualizer', 'lyrics', 'lyric',
+    'hd', 'hq', '4k', 'track', 'music',
+  };
+  static final RegExp _featuringClause = RegExp(
+      r'[(\\[]\s*(feat(?:uring)?|ft)\.?\s+.*?[)\]]',
+      caseSensitive: false);
+  // Version/label noise stripped for matching. Android parity
+  // (TextMatch.VERSION_OR_LABEL_CLAUSE) plus the desktop-only explicit/
+  // clean tags and the slowed/sped/nightcore family: Last.fm bills
+  // "CHUSAMBA [Explicit]" while YouTube lists "CHUSAMBA", and without
+  // stripping the title similarity (66) never clears the gate, so
+  // playback dies on songs that plainly exist. Bare "sped" stays out of
+  // the regex (it would also eat "speed" as a substring); "sped up"
+  // covers the real billing. Token-level VARIANT_WORDS still carries
+  // bare "sped" (whole-word, so "speed" is safe).
+  static final RegExp _versionClause = RegExp(
+      r'[(\\[][^)\]]*(official|music\s*video|audio|video|visualizer|lyrics?|hd|hq|4k|live|remix|acoustic|demo|edit|remaster(?:ed)?|mono|stereo|deluxe|bonus|version|mix|extended|radio|explicit|clean|slowed|sped up|nightcore)[^)\]]*[)\]]',
+      caseSensitive: false);
+  static final RegExp _codecPattern =
+      RegExp('codecs?=["\']([^"\']+)["\']', caseSensitive: false);
+
+  static const List<String> _confirmedUnavailableReasons = [
+    'video has been removed',
+    'video has been deleted',
+    'video was removed',
+    'video was deleted',
+    'this video is private',
+    'this is a private video',
+    'not available in your country',
+    'blocked in your country',
+    'copyright claim',
+  ];
+
+  static const int _maxContinuationPages = 600;
+  static const int _maxPlayerRequestAttempts = 1;
+  static const int _clientCooldownMs = 60000;
+  static const int _maxStreamCacheEntries = 256;
+  static const int _streamTtlMs = 4 * 60 * 60 * 1000;
+  static const int _maxMatchCacheEntries = 1024;
+  static const int _urlExpiryMarginMs = 2 * 60 * 1000;
+  static const int _unknownExpiryTtlMs = 5 * 60 * 1000;
+  // Limusic fast path: one preferred direct-URL client first,
+  // then at most 2 limited fallbacks. Never fan out to the full table.
+  static const String _fastPreferredClient = 'VISIONOS';
+  static const int _maxStreamClients = 3;
+  static const Duration _fastClientTimeout = Duration(seconds: 8);
+
+  final Dio _dio;
+  final SecureStore _secure;
+  late final SignatureDecipher _decipher;
+  AppDatabase? _disk;
+  bool _diskLoaded = false;
+
+  String _apiKey = fallbackWebKey;
+  String _clientVersion = fallbackWebVersion;
+  String? _visitorData;
+  Future<void>? _configFuture;
+
+  final Map<String, _CachedStream> _streamCache = {};
+  final Map<String, Future<ResolvedStream?>> _inflight = {};
+  final Map<String, DateTime> _failedClientsUntil = {};
+  final Map<String, YouTubeMusicTrack> _matchCache = {};
+  final Map<String, _ResolvedRef> _lastResolved = {};
+  String? _lastSuccessfulClientName;
+
+  YtConnection _connection = const YtConnection();
+
+  InnerTubeMusicApi(this._dio, this._secure) {
+    _decipher = SignatureDecipher(_dio);
+  }
+
+  /// Attach the persistent disk cache (call once from the provider).
+  /// Loads up to 256 recent stream entries + prunes expired rows.
+  /// Also restores the InnerTube web config (API key / client version /
+  /// visitorData) so a cold start skips the music.youtube.com HTML
+  /// fetch — Limusic keeps its client registry on disk for the same
+  /// reason (clients.json + override file) instead of re-bootstrapping
+  /// every launch.
+  void attachDiskCache(AppDatabase db) {
+    _disk = db;
+    try {
+      final rawCfg = db.kvGet('yt_web_config');
+      if (rawCfg != null && rawCfg.isNotEmpty) {
+        final decoded = jsonDecode(rawCfg);
+        if (decoded is Map<String, dynamic>) {
+          final key = decoded['apiKey']?.toString() ?? '';
+          final version = decoded['clientVersion']?.toString() ?? '';
+          final visitor = decoded['visitorData']?.toString() ?? '';
+          final savedAt =
+              (decoded['savedAtMs'] as num?)?.toInt() ?? 0;
+          if (key.isNotEmpty) _apiKey = key;
+          if (version.isNotEmpty) _clientVersion = version;
+          if (visitor.isNotEmpty) _visitorData = visitor;
+          if (savedAt > 0) {
+            // Instant cold start: serve from disk now, refresh the
+            // config in the background when older than 24h.
+            _configFuture = Future.value();
+            final ageMs = DateTime.now().millisecondsSinceEpoch -
+                savedAt;
+            if (ageMs > 24 * 60 * 60 * 1000) {
+              unawaited(_fetchWebConfig());
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    if (_diskLoaded) return;
+    _diskLoaded = true;
+    try {
+      db.pruneExpiredStreams(
+          DateTime.now().millisecondsSinceEpoch + _urlExpiryMarginMs);
+      final rows = db.loadStreamEntries(limit: 256);
+      final now = DateTime.now();
+      for (final r in rows) {
+        try {
+          final videoId = r['video_id']?.toString() ?? '';
+          if (videoId.isEmpty) continue;
+          final clientProfile =
+              r['client_profile']?.toString() ?? '';
+          final itag = (r['itag'] as num?)?.toInt() ?? -1;
+          final url = r['url']?.toString() ?? '';
+          if (url.isEmpty) continue;
+          final authScope =
+              r['auth_scope']?.toString() ?? 'anonymous';
+          final expiresAtMs =
+              (r['expires_at_ms'] as num?)?.toInt() ?? 0;
+          final cachedAtMs =
+              (r['cached_at_ms'] as num?)?.toInt() ?? 0;
+          final expiresAt = expiresAtMs > 0
+              ? DateTime.fromMillisecondsSinceEpoch(expiresAtMs)
+              : null;
+          if (expiresAt != null &&
+              expiresAt.difference(now).inMilliseconds <=
+                  _urlExpiryMarginMs) {
+            continue;
+          }
+          Map<String, String> headers = const {};
+          try {
+            final decoded = jsonDecode(
+                r['headers_json']?.toString() ?? '{}');
+            if (decoded is Map) {
+              headers = decoded.map((k, v) => MapEntry(
+                  k.toString(), v.toString()));
+            }
+          } catch (_) {}
+          final stream = ResolvedStream(
+            url: url,
+            mimeType: r['mime']?.toString() ?? 'audio/webm',
+            bitrateKbps:
+                (r['bitrate_kbps'] as num?)?.toInt() ?? 0,
+            audioCodec:
+                r['codec']?.toString() ?? 'OPUS',
+            cacheKey:
+                'youtube:$videoId:$clientProfile:$itag:$authScope:$expiresAtMs',
+            requestHeaders: headers,
+            expiresAt: expiresAt,
+            watchtimeUrl:
+                r['watchtime_url']?.toString() ?? '',
+          );
+          final adaptive = !(stream.mimeType
+                  .toLowerCase()
+                  .contains('mp4') &&
+              itag >= 0 &&
+              itag < 300);
+          _streamCache[
+                  '$videoId|$clientProfile|$itag|$authScope|$expiresAtMs'] =
+              _CachedStream(stream, clientProfile, itag,
+                  adaptive, authScope,
+                  DateTime.fromMillisecondsSinceEpoch(
+                      cachedAtMs > 0
+                          ? cachedAtMs
+                          : now.millisecondsSinceEpoch));
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  YtConnection get connection => _connection;
+
+  void setConnection(YtConnection c) => _connection = c;
+
+  Future<void> loadPersistedConnection() async {
+    final stored = await _secure.readYtCookies() ?? '';
+    if (stored.isEmpty) return;
+    // Stored values predate normalization — re-normalize so old
+    // cookies.txt pastes keep working after upgrade.
+    String cookies = stored;
+    try {
+      cookies = normalizeCookies(stored);
+    } catch (_) {
+      // Keep raw stored value as fallback; _sapisid may still find it.
+      cookies = stored.trim();
+    }
+    if (cookies.isEmpty) return;
+    // Restore the active profile pointer (email + brand page ID).
+    // Absent on pre-roster installs → main channel, as before.
+    var profileEmail = '';
+    var activePageId = '';
+    try {
+      final rawActive = await _secure.readYtActive() ?? '';
+      if (rawActive.isNotEmpty) {
+        final decoded = jsonDecode(rawActive);
+        if (decoded is Map<String, dynamic>) {
+          profileEmail =
+              decoded['email']?.toString() ?? '';
+          activePageId =
+              decoded['pageId']?.toString() ?? '';
+        }
+      }
+    } catch (_) {}
+    _connection = YtConnection(
+      connected: true,
+      cookies: cookies,
+      connectedAtMillis:
+          DateTime.now().millisecondsSinceEpoch,
+      profileEmail: profileEmail,
+      activePageId: activePageId,
+    );
+  }
+
+  /// Persist the active identity pointer alongside the jar.
+  Future<void> _persistActivePointer() => _secure.writeYtActive(
+        jsonEncode({
+          'email': _connection.profileEmail,
+          'pageId': _connection.activePageId,
+        }),
+      );
+
+  /// Normalize user-pasted cookies into a `Cookie` header value.
+  ///
+  /// Accepts:
+  /// - header string: `A=1; B=2`
+  /// - Netscape cookies.txt (TSV, `#HttpOnly` lines, `Cookie:` prefix)
+  /// - JSON object / array exports from cookie extensions
+  /// - multiline pastes (newlines treated as `; ` separators)
+  /// Throws [FormatException] when nothing usable is found.
+  static String normalizeCookies(String raw) {
+    final input = raw.trim();
+    if (input.isEmpty) {
+      throw const FormatException('Empty cookies');
+    }
+    final pairs = <String, String>{};
+    void addPair(String name, String value) {
+      final n = name.trim();
+      var v = value.trim();
+      if (n.isEmpty || v.isEmpty) return;
+      // Strip surrounding quotes some exporters add.
+      if (v.length >= 2 &&
+          ((v.startsWith('"') && v.endsWith('"')) ||
+              (v.startsWith("'") && v.endsWith("'")))) {
+        v = v.substring(1, v.length - 1);
+      }
+      if (v.isEmpty) return;
+      pairs[n] = v;
+    }
+
+    // JSON export? e.g. [{"name":"SID","value":"..."}] or {"SID":"..."}.
+    if (input.startsWith('[') || input.startsWith('{')) {
+      try {
+        final decoded = jsonDecode(input);
+        if (decoded is List) {
+          for (final e in decoded) {
+            if (e is Map) {
+              final n = e['name']?.toString() ?? '';
+              final v = e['value']?.toString() ?? '';
+              addPair(n, v);
+            }
+          }
+        } else if (decoded is Map) {
+          // {"cookies": [...] } wrapper or plain {name: value} map.
+          final list = decoded['cookies'];
+          if (list is List) {
+            for (final e in list) {
+              if (e is Map) {
+                addPair(e['name']?.toString() ?? '',
+                    e['value']?.toString() ?? '');
+              }
+            }
+          } else {
+            decoded.forEach((k, v) {
+              if (k.toString() == 'cookies') return;
+              addPair(k.toString(), v.toString());
+            });
+          }
+        }
+      } catch (_) {
+        // Not JSON — fall through to header/TSV parsing.
+      }
+    }
+
+    if (pairs.isEmpty) {
+      // Line-oriented parse: handles header strings, multiline pastes,
+      // Netscape cookies.txt (7 TAB columns), and `Cookie: ...` prefixes.
+      for (var line in input.split(RegExp(r'\r?\n'))) {
+        line = line.trim();
+        if (line.isEmpty) continue;
+        // `#HttpOnly` lines are DATA (HttpOnly cookies), not comments —
+        // only `# ...` lines are comments.
+        if (line.startsWith('#HttpOnly')) {
+          line = line.substring('#HttpOnly'.length).trim();
+        } else if (line.startsWith('#')) {
+          continue;
+        }
+        if (line.toLowerCase().startsWith('cookie:')) {
+          line = line.substring(7).trim();
+        }
+        // Netscape format: domain, flag, path, secure, expiry, name, value.
+        if (line.contains('\t')) {
+          final cols = line.split('\t');
+          if (cols.length >= 7) {
+            addPair(cols[5], cols[6]);
+            continue;
+          }
+          // Fall through: treat tabs as separators.
+          line = line.replaceAll('\t', '; ');
+        }
+        // Semicolon-separated header chunks on this line.
+        for (final part in line.split(';')) {
+          final chunk = part.trim();
+          if (chunk.isEmpty || chunk.startsWith('#')) continue;
+          final idx = chunk.indexOf('=');
+          if (idx <= 0) continue;
+          addPair(chunk.substring(0, idx),
+              chunk.substring(idx + 1));
+        }
+      }
+    }
+
+    if (pairs.isEmpty) {
+      throw const FormatException(
+          'No cookies found — paste the Cookie header or cookies.txt');
+    }
+    // SAPISID family is mandatory for the Authorization header; without
+    // it every authenticated call goes out cookie-only and YT ignores it.
+    const sapisids = ['__Secure-3PAPISID', 'SAPISID', 'APISID'];
+    final hasSapisid =
+        sapisids.any((k) => pairs.containsKey(k));
+    if (!hasSapisid) {
+      throw const FormatException(
+          'Missing SAPISID — export cookies from music.youtube.com while signed in (need __Secure-3PAPISID/SAPISID)');
+    }
+    // Deterministic order keeps the cache-key digest stable.
+    final names = pairs.keys.toList()..sort();
+    return names.map((n) => '$n=${pairs[n]}').join('; ');
+  }
+
+  Future<void> connect(String rawCookies) => connectAs(
+        cookies: rawCookies,
+      );
+
+  /// Connect (or switch) to a jar + channel. Atomic: the previous
+  /// connection is only replaced after the new combination verifies.
+  /// [profileEmail] keys the owning Google login in the roster;
+  /// [pageId] selects its brand channel ('' = main channel).
+  Future<void> connectAs({
+    required String cookies,
+    String profileEmail = '',
+    String pageId = '',
+  }) async {
+    _clearAccountCache();
+    final normalized = normalizeCookies(cookies);
+    if (kDebugMode) {
+      debugPrint(
+          'InnerTube: connect persist ${normalized.length} chars');
+    }
+    final next = YtConnection(
+      connected: true,
+      cookies: normalized,
+      connectedAtMillis:
+          DateTime.now().millisecondsSinceEpoch,
+      profileEmail: profileEmail,
+      activePageId: pageId,
+    );
+    final prev = _connection;
+    _connection = next;
+    try {
+      // Fail fast: a lightweight authenticated browse proves the
+      // combination is accepted before anything is persisted.
+      await verifyConnection();
+    } catch (_) {
+      _connection = prev;
+      rethrow;
+    }
+    await _secure.writeYtCookies(normalized);
+    await _persistActivePointer();
+    if (kDebugMode) {
+      debugPrint('InnerTube: connect verified');
+    }
+  }
+
+  /// Lightweight authenticated check: browses the account's playlist
+  /// shelf. Throws on HTTP error or when the response shows the
+  /// session was treated as anonymous (login wall / no contents).
+  Future<void> verifyConnection() async {
+    if (!_connection.connected) {
+      throw StateError('Not connected');
+    }
+    final root = await _browseRoot(libraryPlaylistsBrowseId,
+        authenticated: true);
+    final contents = root['contents'];
+    final text = jsonEncode(root);
+    if (contents == null ||
+        (text.contains('SIGN_IN') &&
+            !text.contains('music_liked_playlists'))) {
+      if (kDebugMode) {
+        debugPrint('YtVerify: REJECTED ${_authDebug()}');
+      }
+      throw const FormatException(
+          'YouTube rejected the cookies (signed out) — re-export from music.youtube.com while signed in');
+    }
+    if (kDebugMode) {
+      debugPrint('YtVerify: ok ${_authDebug()}');
+    }
+  }
+
+  // -- account surfaces (liked / history / playlists) -------------------------
+
+  /// One-line context for account-fetch diagnostics: channel mode,
+  /// jar size, SAPISID presence. No secret material ever logged.
+  String _authDebug() {
+    final pageId = _connection.activePageId;
+    return 'page=${pageId.isEmpty ? 'main' : '${pageId.length}d'} '
+        'jar=${_connection.cookies.length}ch '
+        'sapisid=${_sapisid() != null}';
+  }
+
+  /// Account liked songs (VLLM), authenticated. Empty when signed out
+  /// or on any failure — callers render their normal empty state.
+  Future<List<YouTubeMusicTrack>> fetchLikedSongs(
+      {int limit = 200}) async {
+    if (!_connection.connected) return const [];
+    try {
+      await _ensureConfig();
+      final root = await _browseRoot(likedBrowseId,
+          authenticated: true);
+      final pages = await _collectBrowseSongPages(root, limit,
+          authenticated: true);
+      if (kDebugMode) {
+        debugPrint(
+            'YtFetch: liked=${pages.tracks.length} '
+            'titled=${pages.tracks.where((t) => t.title.isNotEmpty).length} '
+            'withId=${pages.tracks.where((t) => t.videoId.isNotEmpty).length} '
+            '${_authDebug()}');
+      }
+      return pages.tracks;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('YtFetch: liked FAILED $e ${_authDebug()}');
+      }
+      return const [];
+    }
+  }
+
+  /// Account YouTube Music watch history, authenticated.
+  Future<List<YouTubeMusicTrack>> fetchYtHistory(
+      {int limit = 100}) async {
+    if (!_connection.connected) return const [];
+    try {
+      await _ensureConfig();
+      final root = await _browseRoot(historyBrowseId,
+          authenticated: true);
+      final pages = await _collectBrowseSongPages(root, limit,
+          authenticated: true);
+      if (kDebugMode) {
+        debugPrint(
+            'YtFetch: history=${pages.tracks.length} ${_authDebug()}');
+      }
+      return pages.tracks;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('YtFetch: history FAILED $e ${_authDebug()}');
+      }
+      return const [];
+    }
+  }
+
+  /// Record a play in the account's YouTube Music watch history.
+  ///
+  /// Mirrors the live web client's ping: GET
+  /// `music.youtube.com/api/stats/watchtime` with cookie auth
+  /// (captured 2026-09 from real YTM playback — the `youtubei`
+  /// `stats/watchtime` POST form 404s on both hosts).
+  ///
+  /// When [watchUrl] carries the player-minted
+  /// `videostatsPlaybackUrl` base for this video, the ping is exactly
+  /// what Android sends (YtMusicHistorySyncManager parity): the
+  /// minted query untouched plus `ver=2`, `c=WEB_REMIX`, and the
+  /// window cpn — one ping per window, since repeats would file
+  /// duplicate history entries. Without a minted base the fully
+  /// fully forged shape is sent as a fallback.
+  ///
+  /// Fail-soft and no-throw: history sync must never disturb
+  /// playback. Returns true when the ping was accepted (2xx).
+  /// Session-stable client id for watchtime pings (`cl`): the live
+  /// client holds one value across a whole playback, so this is
+  /// minted once per process, not per ping.
+  static int? _watchClValue;
+
+  static int _watchCl() => _watchClValue ??=
+      100000000 + Random().nextInt(900000000);
+
+  Future<bool> recordWatchHistory({
+    required String videoId,
+    required int watchedSeconds,
+    int durationSeconds = 0,
+    String? cpn,
+    String watchUrl = '',
+  }) async {
+    if (!_connection.connected) {
+      if (kDebugMode) debugPrint('YtHistory: skip (signed out)');
+      return false;
+    }
+    if (videoId.isEmpty || watchedSeconds < 30) {
+      if (kDebugMode) {
+        debugPrint(
+            'YtHistory: skip (id empty or watched<30s) et=$watchedSeconds');
+      }
+      return false;
+    }
+    final cookie = _cookieHeaderValue();
+    if (cookie == null || cookie.isEmpty) {
+      if (kDebugMode) debugPrint('YtHistory: skip (no cookies)');
+      return false;
+    }
+    final len =
+        durationSeconds > 0 ? durationSeconds : watchedSeconds;
+    final cpnValue = cpn ?? _watchCpn();
+    // Watch page: the live client sets both the Referer header and
+    // the referrer param to the playing video's watch URL.
+    final watchPage = '$musicOrigin/watch?v=$videoId';
+    // Timing block for the forged fallback only. The presigned
+    // (playback-URL) ping carries no timing at all — Android parity.
+    final timing = <String, String>{
+      'cpn': cpnValue,
+      'st': '0',
+      'et': '$watchedSeconds',
+      'cmt': '$watchedSeconds',
+      'rt': '$watchedSeconds',
+      'rti': '$watchedSeconds',
+      'rtn': '${watchedSeconds + 40}',
+      'lact': '${max(0, watchedSeconds * 1000 - 1245)}',
+      'vis': '10',
+      'state': 'playing',
+      'len': '$len',
+      'docid': videoId,
+    };
+    Uri uri;
+    String via;
+    // Direct-URL clients (VISIONOS…) mint the base on www.youtube.com,
+    // the web client on music.youtube.com — accept any YouTube stats
+    // host with the right path.
+    final parsedBase = watchUrl.isNotEmpty ? Uri.tryParse(watchUrl) : null;
+    final validBase = parsedBase != null &&
+            parsedBase.host.contains('youtube.com') &&
+            parsedBase.path.startsWith('/api/stats/')
+        ? parsedBase
+        : null;
+    if (validBase != null) {
+      // Exactly the Android shape: minted query untouched plus
+      // ver=2, c=WEB_REMIX and the window cpn. One ping per window —
+      // repeats would file duplicate history entries.
+      final merged = Map<String, String>.from(validBase.queryParameters)
+        ..['ver'] = '2'
+        ..['c'] = 'WEB_REMIX'
+        ..['cpn'] = cpnValue
+        ..putIfAbsent('referrer', () => watchPage);
+      uri = validBase.replace(queryParameters: merged);
+      via = 'presigned';
+    } else {
+      uri = Uri.https('music.youtube.com', '/api/stats/watchtime', {
+        'ns': 'yt',
+        'el': 'detailpage',
+        ...timing,
+        'fmt': '0',
+        'fs': '0',
+        'euri': '',
+        'cl': '${_watchCl()}',
+        'volume': '100',
+        'cbr': 'Chrome',
+        'cbrver': '152.0.0.0',
+        'c': 'WEB_REMIX',
+        'cver': _clientVersion,
+        'cplayer': 'UNIPLAYER',
+        'cos': 'Windows',
+        'cosver': '10.0',
+        'cplatform': 'DESKTOP',
+        'hl': 'en_US',
+        'cr': 'US',
+        'afmt': '251',
+        'idpj': '-3',
+        'ldpj': '-12',
+        'muted': '0',
+        'referrer': watchPage,
+      });
+      via = 'forged';
+    }
+    if (kDebugMode) {
+      debugPrint(
+          'YtHistory: pushing $videoId et=${watchedSeconds}s via=$via');
+    }
+    try {
+      // Brand-channel routing, mirroring _post: without X-Goog-PageId
+      // the ping lands on the main channel's history (or nowhere)
+      // when a brand channel is active. Header set mirrors the live
+      // web client (client name/version, visitor id, request times,
+      // device block) minus unmintable telemetry (identity token,
+      // datasync id, sec-* fetch metadata).
+      final pageId = _connection.activePageId;
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final visitor = _visitorData ?? '';
+      final res = await _dio
+          .getUri<String>(
+            uri,
+            options: Options(
+              headers: {
+                'User-Agent': webUserAgent,
+                'Origin': musicOrigin,
+                'Referer': watchPage,
+                'Cookie': cookie,
+                'X-YouTube-Client-Name':
+                    clientIds['WEB_REMIX'] ?? 'WEB_REMIX',
+                'X-YouTube-Client-Version': _clientVersion,
+                if (visitor.isNotEmpty)
+                  'X-Goog-Visitor-Id': visitor,
+                'X-Goog-Event-Time': '$nowMs',
+                'X-Goog-Request-Time': '$nowMs',
+                'X-YouTube-Device':
+                    'cbr=Chrome&cbrver=152.0.0.0&ceng=WebKit&'
+                    'cengver=537.36&cos=Windows&cosver=10.0&'
+                    'cplatform=DESKTOP',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+                if (pageId.isNotEmpty) ...{
+                  'X-Goog-PageId': pageId,
+                  'X-Goog-AuthUser': '0',
+                },
+              },
+              responseType: ResponseType.plain,
+            ),
+          )
+          .timeout(const Duration(seconds: 10));
+      final ok = (res.statusCode ?? 0) ~/ 100 == 2;
+      if (kDebugMode) {
+        debugPrint(
+            'YtHistory: ping ${ok ? 'accepted' : 'rejected ${res.statusCode}'} '
+            '$videoId et=${watchedSeconds}s via=$via');
+      }
+      return ok;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('YtHistory: ping FAILED $e ${_authDebug()}');
+      }
+      return false;
+    }
+  }
+
+  /// Authenticated WEB_REMIX player fetch for the history playback
+  /// base (Android parity: `fetchHistoryTrackingUrl` — the base must
+  /// be minted under the account; anonymous direct-client bases are
+  /// accepted but filed nowhere).
+  ///
+  /// Bare call first: metadata-only player responses often succeed
+  /// without a poToken (enforcement targets stream URLs), and no
+  /// mint means no BotGuard window. Only on a miss is the poToken'd
+  /// call attempted — its first mint per app run can briefly flash
+  /// the hidden window; session tokens cache after that.
+  Future<String> fetchAuthenticatedPlaybackUrl(String videoId) async {
+    if (!_connection.connected || videoId.isEmpty) return '';
+    final bare = await _fetchPlaybackBase(videoId, null);
+    if (bare.isNotEmpty) return bare;
+    String? playerPoToken;
+    try {
+      playerPoToken = await _mintPoToken(videoId)
+          .timeout(const Duration(seconds: 12));
+    } catch (_) {}
+    return _fetchPlaybackBase(videoId, playerPoToken);
+  }
+
+  Future<String> _fetchPlaybackBase(
+      String videoId, String? playerPoToken) async {
+    try {
+      final root = await _post(
+        '$musicApi/player?key=$_apiKey&prettyPrint=false',
+        body: {
+          'context': _context(
+            'WEB_REMIX',
+            _clientVersion,
+            visitorData: _visitorData,
+            poToken: playerPoToken,
+          ),
+          'videoId': videoId,
+          'contentCheckOk': true,
+          'racyCheckOk': true,
+        },
+        clientName: 'WEB_REMIX',
+        clientVersion: _clientVersion,
+        userAgent: webUserAgent,
+        authenticated: true,
+        maxAttempts: 1,
+      );
+      return _watchtimeUrlOf(root);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// 16-char client playback nonce for watchtime pings. One cpn covers
+  /// a whole playback; the ticker shares it across pings.
+  static String newWatchCpn() => _watchCpn();
+
+  static String _watchCpn() {
+    const chars =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    final r = Random();
+    return List.generate(
+        16, (_) => chars[r.nextInt(chars.length)]).join();
+  }
+
+  /// Account playlists shelf (liked + created), authenticated.
+  /// Non-playlist lookalikes (channels/albums) are filtered by id.
+  Future<List<YouTubePlaylistSummary>> fetchAccountPlaylists() async {
+    if (!_connection.connected) return const [];
+    try {
+      await _ensureConfig();
+      final root = await _browseRoot(libraryPlaylistsBrowseId,
+          authenticated: true);
+      final lists = _parsePlaylistRenderers(root)
+          .where((p) =>
+              !p.id.startsWith('UC') &&
+              !p.id.startsWith('MPRE'))
+          .toList();
+      if (kDebugMode) {
+        debugPrint(
+            'YtFetch: playlists=${lists.length} ${_authDebug()}');
+      }
+      return lists;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('YtFetch: playlists FAILED $e ${_authDebug()}');
+      }
+      return const [];
+    }
+  }
+
+  final Map<String, _AccountCacheEntry> _accountCaches = {};
+
+  void _clearAccountCache() {
+    _accountCaches.clear();
+  }
+
+  _AccountCacheEntry? _cachedAccount(String pageId) {
+    final e = _accountCaches[pageId];
+    if (e == null) return null;
+    if (DateTime.now().difference(e.at) >
+        const Duration(hours: 1)) {
+      _accountCaches.remove(pageId);
+      return null;
+    }
+    return e;
+  }
+
+  /// Signed-in account identity via `account/account_menu`
+  /// (authenticated). [pageId] scopes to a brand channel ('' = main
+  /// channel, routed via `X-Goog-PageId`). Null when signed out, on
+  /// failure, or when YouTube returns no usable fields. Cached an
+  /// hour per channel.
+  Future<YtAccount?> fetchAccountInfo(
+      {bool forceRefresh = false, String pageId = ''}) async {
+    if (!_connection.connected) return null;
+    if (!forceRefresh) {
+      final hit = _cachedAccount(pageId);
+      if (hit != null) return hit.account;
+    }
+    try {
+      await _ensureConfig();
+      // music.youtube.com first, www.youtube.com fallback. Each host
+      // needs its OWN Origin/Referer — a music Origin on www gets
+      // rejected with "Origin doesn't match Host".
+      var merged = const YtAccount();
+      for (final (api, origin) in [
+        (musicApi, musicOrigin),
+        (youtubeApi, youtubeOrigin),
+      ]) {
+        Map<String, dynamic>? root;
+        try {
+          root = await _post(
+            '$api/account/account_menu?key=$_apiKey&prettyPrint=false',
+            body: {
+              'context':
+                  _webContext(_clientVersion, _visitorData),
+            },
+            clientName: 'WEB_REMIX',
+            clientVersion: _clientVersion,
+            userAgent: webUserAgent,
+            authenticated: true,
+            origin: origin,
+            referer: '$origin/',
+            pageId: pageId,
+          );
+        } catch (e) {
+          if (kDebugMode) {
+            debugPrint('YtAccount: $api failed: $e');
+          }
+          continue;
+        }
+        final account = _parseAccount(root);
+        if (kDebugMode) {
+          debugPrint(
+              'YtAccount: $api keys=${root.keys.join(',')} '
+              'name=${account.name.isNotEmpty} '
+              'handle=${account.handle.isNotEmpty} '
+              'photo=${account.photoUrl.isNotEmpty}');
+        }
+        // Best-of-both-hosts merge: response shapes vary per host
+        // (one may carry name+photo while the other has the handle),
+        // so accumulate fields instead of returning the first
+        // non-empty parse. Stops early once name+photo+handle land.
+        merged = YtAccount(
+          name: merged.name.isNotEmpty
+              ? merged.name
+              : account.name,
+          handle: merged.handle.isNotEmpty
+              ? merged.handle
+              : account.handle,
+          email: merged.email.isNotEmpty
+              ? merged.email
+              : account.email,
+          photoUrl: merged.photoUrl.isNotEmpty
+              ? merged.photoUrl
+              : account.photoUrl,
+        );
+        if (merged.name.isNotEmpty &&
+            merged.photoUrl.isNotEmpty &&
+            merged.handle.isNotEmpty) {
+          break;
+        }
+      }
+      if (!merged.isEmpty) {
+        _accountCaches[pageId] = _AccountCacheEntry(
+          merged,
+          DateTime.now(),
+        );
+        return merged;
+      }
+      return null;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('YtAccount: failed: $e');
+      }
+      return null;
+    }
+  }
+
+  /// Best-effort identity extraction. The `account_menu` response is
+  /// an actions envelope whose popup header is an
+  /// `activeAccountHeaderRenderer` carrying `accountName` runs,
+  /// `accountPhoto` thumbnails, `email`, and a `channelHandle` node.
+  /// Name/photo/email come from ONE row only — mixing across rows
+  /// produced mismatched avatars. The @handle is resolved separately
+  /// (any node shape, else subtree scan) since its shape varies.
+  ///
+  /// Photo is optional: right after a fresh login YouTube often
+  /// returns the name without a photo yet. Name-only rows are
+  /// accepted as a fallback so the roster entry still keys correctly
+  /// (photo backfills on the next refresh) instead of degrading the
+  /// whole login to a nameless jar.
+  YtAccount _parseAccount(Map<String, dynamic> root) {
+    final active = <Map<String, dynamic>>[];
+    final generic = <Map<String, dynamic>>[];
+    final items = <Map<String, dynamic>>[];
+    _collectObjects(root, 'activeAccountHeaderRenderer', active);
+    _collectObjects(root, 'accountHeader', generic);
+    _collectObjects(root, 'accountItemRenderer', items);
+    final handle = _channelHandleText(root);
+    YtAccount? nameOnly;
+    for (final h in [...active, ...generic, ...items]) {
+      final name =
+          (_runsText((h['accountName'] as Map?)?['runs']) ??
+                  '')
+              .trim();
+      if (name.isEmpty) continue;
+      final photo = _accountPhoto(h);
+      if (photo.isNotEmpty) {
+        return YtAccount(
+          name: name,
+          handle: handle,
+          email: _accountEmail(h),
+          photoUrl: photo,
+        );
+      }
+      nameOnly ??= YtAccount(
+        name: name,
+        handle: handle,
+        email: _accountEmail(h),
+      );
+    }
+    return nameOnly ?? const YtAccount();
+  }
+
+  /// Real @handle from the `channelHandle` node: substring search, not
+  /// prefix/full match — runs often join to "Name (@handle)" shapes.
+  /// Confined to channelHandle subtrees (never the whole response, so
+  /// emails elsewhere can't false-positive).
+  static final RegExp _handleSearch =
+      RegExp(r'@[\w.\-·]{1,39}');
+
+  String _channelHandleText(Map<String, dynamic> root) {
+    final handles = <Map<String, dynamic>>[];
+    _collectObjects(root, 'channelHandle', handles);
+    for (final h in handles) {
+      final hit = _searchHandleText(h);
+      if (hit != null) return hit;
+    }
+    return '';
+  }
+
+  /// First @handle-looking token anywhere in the subtree, or null.
+  String? _searchHandleText(Object? node) {
+    if (node is String) {
+      return _handleSearch.firstMatch(node)?.group(0);
+    }
+    if (node is Map<String, dynamic>) {
+      // Text-bearing shapes first for precision.
+      for (final k in ['runs', 'simpleText', 'text']) {
+        final hit = _searchHandleText(node[k]);
+        if (hit != null) return hit;
+      }
+      for (final entry in node.entries) {
+        if (entry.key == 'runs' ||
+            entry.key == 'simpleText' ||
+            entry.key == 'text') {
+          continue;
+        }
+        final hit = _searchHandleText(entry.value);
+        if (hit != null) return hit;
+      }
+    } else if (node is List) {
+      for (final v in node) {
+        final hit = _searchHandleText(v);
+        if (hit != null) return hit;
+      }
+    }
+    return null;
+  }
+
+  /// The row's OWN photo node only — never a whole-object fallback
+  /// (its first thumbnails array may belong to something else).
+  String _accountPhoto(Map<String, dynamic> h) {
+    final node = h['accountPhoto'];
+    if (node is String && node.trim().isNotEmpty) {
+      return node.trim();
+    }
+    return _extractThumbnailsUrl(node) ?? '';
+  }
+
+  /// Account email in whatever shape YouTube sends it (runs,
+  /// simpleText, or raw string).
+  String _accountEmail(Map<String, dynamic> h) {
+    final e = h['email'];
+    if (e is Map<String, dynamic>) {
+      final runs = _runsText(e['runs']);
+      if (runs != null && runs.trim().isNotEmpty) {
+        return runs.trim();
+      }
+      final simple = e['simpleText']?.toString().trim() ?? '';
+      if (simple.isNotEmpty) return simple;
+      return '';
+    }
+    if (e is String && e.trim().isNotEmpty) return e.trim();
+    return '';
+  }
+
+  Future<void> signOut() async {
+    await _secure.writeYtCookies(null);
+    await _secure.writeYtProfiles(null);
+    await _secure.writeYtActive(null);
+    _connection = const YtConnection();
+    _clearAccountCache();
+  }
+
+  /// Resolve identity for an ARBITRARY jar (not the active
+  /// connection): used when capturing a new profile/channel to label
+  /// the roster entry. Saves + restores connection and caches, so the
+  /// active session is untouched. [pageId] scopes to a brand channel.
+  Future<YtAccount?> resolveIdentityFor(
+    String cookies, {
+    String pageId = '',
+  }) async {
+    String normalized;
+    try {
+      normalized = normalizeCookies(cookies);
+    } catch (_) {
+      return null;
+    }
+    final savedConnection = _connection;
+    final savedCaches =
+        Map<String, _AccountCacheEntry>.of(_accountCaches);
+    _connection = YtConnection(
+      connected: true,
+      cookies: normalized,
+      connectedAtMillis:
+          DateTime.now().millisecondsSinceEpoch,
+      activePageId: pageId,
+    );
+    try {
+      return await fetchAccountInfo(
+          forceRefresh: true, pageId: pageId);
+    } catch (_) {
+      return null;
+    } finally {
+      _connection = savedConnection;
+      _accountCaches
+        ..clear()
+        ..addAll(savedCaches);
+    }
+  }
+
+  // -- auth helpers (mirror YtMusicAuthManager) ------------------------------
+
+  String? _sapisid() {
+    final cookies = _connection.cookies;
+    if (cookies.isEmpty) return null;
+    String? pick(String name) {
+      for (final part in cookies.split(';')) {
+        final idx = part.indexOf('=');
+        if (idx <= 0) continue;
+        if (part.substring(0, idx).trim() == name) {
+          return part.substring(idx + 1).trim();
+        }
+      }
+      return null;
+    }
+
+    return pick('__Secure-3PAPISID') ??
+        pick('SAPISID') ??
+        pick('APISID');
+  }
+
+  String? _cookieHeaderValue() {
+    if (_connection.cookies.isEmpty) return null;
+    return _connection.cookies;
+  }
+
+  /// `SAPISIDHASH <unix_ts>_<sha1(ts + " " + sapisid + " " + origin)>`
+  /// for authenticated InnerTube requests (mirrors Android). Lives here
+  /// rather than on LastFmSigner: only this client mints these headers.
+  static String sapisidHash(String sapisid, String origin) {
+    final ts = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+    final hash = sha1.convert(utf8.encode('$ts $sapisid $origin')).toString();
+    return 'SAPISIDHASH ${ts}_$hash';
+  }
+
+  String? _authorizationHeaderValue([String? origin]) {
+    final sapisid = _sapisid();
+    if (sapisid == null) return null;
+    return sapisidHash(sapisid, origin ?? musicOrigin);
+  }
+
+  String _playbackAuthScope() {
+    if (!_connection.connected) return 'anonymous';
+    final digest = sha256
+        .convert(utf8.encode(
+            '${_connection.cookies}|${_connection.activePageId}'))
+        .bytes
+        .take(8)
+        .map((b) =>
+            (b & 0xff).toRadixString(16).padLeft(2, '0'))
+        .join();
+    return 'account:${_connection.connectedAtMillis}:$digest';
+  }
+
+  // -- bootstrap ---------------------------------------------------------------
+
+  Future<void> _ensureConfig() {
+    _configFuture ??= _fetchWebConfig();
+    return _configFuture!;
+  }
+
+  Future<void> _fetchWebConfig() async {
+    try {
+      final res = await _dio
+          .get<String>(
+            '$musicOrigin/',
+            options: Options(
+              headers: {'User-Agent': webUserAgent},
+              responseType: ResponseType.plain,
+            ),
+          )
+          .timeout(const Duration(seconds: 4));
+      final html = res.data ?? '';
+      final key = _findConfig(html, 'INNERTUBE_API_KEY');
+      final version = _findConfig(
+          html, 'INNERTUBE_CONTEXT_CLIENT_VERSION');
+      final visitor = _findConfig(html, 'VISITOR_DATA');
+      if (visitor != null && visitor.isNotEmpty) {
+        _visitorData = visitor;
+      }
+      if (key != null && key.isNotEmpty) _apiKey = key;
+      if (version != null && version.isNotEmpty) {
+        _clientVersion = version;
+      }
+      // Persist for instant cold starts (see attachDiskCache).
+      try {
+        _disk?.kvSet(
+            'yt_web_config',
+            jsonEncode({
+              'apiKey': _apiKey,
+              'clientVersion': _clientVersion,
+              'visitorData': _visitorData ?? '',
+              'savedAtMs':
+                  DateTime.now().millisecondsSinceEpoch,
+            }));
+      } catch (_) {}
+    } catch (_) {
+      // Keep current values (fallbacks on first run, disk-restored
+      // config afterwards) so an offline cold start still plays.
+    }
+  }
+
+  void _clearWebConfig() {
+    _configFuture = null;
+  }
+
+  static String? _findConfig(String html, String key) {
+    if (html.isEmpty) return null;
+    final m = RegExp('"$key"\\s*:\\s*"([^"]+)"')
+        .firstMatch(html)
+        ?.group(1);
+    return m
+        ?.replaceAll('\\u003d', '=')
+        .replaceAll('\\x3d', '=')
+        .replaceAll('\\/', '/');
+  }
+
+  // -- request plumbing ----------------------------------------------------------
+
+  Map<String, dynamic> _context(
+    String name,
+    String version, {
+    String? visitorData,
+    String? osVersion,
+    String? osName,
+    String? deviceMake,
+    String? deviceModel,
+    String? androidSdkVersion,
+    String? poToken,
+  }) {
+    return {
+      'client': {
+        'clientName': name,
+        'clientVersion': version,
+        'hl': 'en',
+        'gl': 'US',
+        if (visitorData != null && visitorData.isNotEmpty)
+          'visitorData': visitorData,
+        if (osName != null && osName.isNotEmpty)
+          'osName': osName,
+        if (osVersion != null && osVersion.isNotEmpty)
+          'osVersion': osVersion,
+        if (deviceMake != null && deviceMake.isNotEmpty)
+          'deviceMake': deviceMake,
+        if (deviceModel != null && deviceModel.isNotEmpty)
+          'deviceModel': deviceModel,
+        if (androidSdkVersion != null &&
+            androidSdkVersion.isNotEmpty)
+          'androidSdkVersion': androidSdkVersion,
+      },
+      if (poToken != null && poToken.isNotEmpty)
+        'serviceIntegrityDimensions': {
+          'poToken': poToken,
+        },
+    };
+  }
+
+  Map<String, dynamic> _webContext(String version, String? visitor) =>
+      _context('WEB_REMIX', version, visitorData: visitor);
+
+  /// Pre-signed playback base minted per player response
+  /// (`playbackTracking.videostatsPlaybackUrl`). THIS is the URL that
+  /// registers watch history (Android parity:
+  /// YtMusicHistorySyncManager + ytmusicapi `add_history_item`) —
+  /// the sibling `videostatsWatchtimeUrl` only feeds QoE stats and
+  /// its pings are accepted but filed nowhere. Either shape is
+  /// accepted: `{'baseUrl': url}` (direct clients) or plain string.
+  static String _watchtimeUrlOf(Map? root) {
+    try {
+      final tracking = root?['playbackTracking'] as Map?;
+      final raw = tracking?['videostatsPlaybackUrl'];
+      final url = raw is Map
+          ? raw['baseUrl']?.toString() ?? ''
+          : raw?.toString() ?? '';
+      if (url.isEmpty) return '';
+      final uri = Uri.tryParse(url);
+      if (uri == null ||
+          !uri.host.contains('youtube.com') ||
+          !uri.path.startsWith('/api/stats/')) {
+        // Rejection is diagnostic gold (host? unparseable? wrong
+        // type?) — log the shape, never the token-bearing value.
+        if (kDebugMode) {
+          final keys =
+              raw is Map ? raw.keys.map((k) => k.toString()).toList() : null;
+          debugPrint('YtHistory: playback reject host=${uri?.host} '
+              'path=${uri?.path} len=${url.length} '
+              'type=${raw.runtimeType} keys=$keys');
+        }
+        return '';
+      }
+      return url;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<Map<String, dynamic>> _post(
+    String url, {
+    required Map<String, dynamic> body,
+    required String clientName,
+    required String clientVersion,
+    required String userAgent,
+    bool authenticated = false,
+    String? origin,
+    String? referer,
+    String? visitorData,
+    int maxAttempts = 2,
+    Duration? callTimeout,
+    // Brand-channel routing override. Null = the active channel
+    // (`_connection.activePageId`). Null/empty both mean the main
+    // channel (no header — today's behavior, unchanged).
+    String? pageId,
+  }) async {
+    await _ensureConfig();
+    origin ??= clientName == 'WEB_REMIX'
+        ? musicOrigin
+        : youtubeOrigin;
+    referer ??= clientName == 'WEB_REMIX'
+        ? '$musicOrigin/'
+        : '$youtubeOrigin/';
+    final effectivePageId = pageId ?? _connection.activePageId;
+    final headers = {
+      'Content-Type': 'application/json',
+      'User-Agent': userAgent,
+      'Origin': origin,
+      'X-Origin': origin,
+      'Referer': referer,
+      'X-Goog-Api-Format-Version': '1',
+      'X-YouTube-Client-Name':
+          clientIds[clientName] ?? clientName,
+      'X-YouTube-Client-Version': clientVersion,
+      if (visitorData != null && visitorData.isNotEmpty)
+        'X-Goog-Visitor-Id': visitorData,
+      // Account surface only when requested AND connected â€”
+      // anonymous endpoints stay cookie-free.
+      if (authenticated && _connection.connected) ...{
+        'Cookie': ?_cookieHeaderValue(),
+        'Authorization': ?_authorizationHeaderValue(origin),
+        // Brand-channel delegation: same jar, per-request routing.
+        // Main channel (empty) sends nothing — unchanged behavior.
+        if (effectivePageId.isNotEmpty) ...{
+          'X-Goog-PageId': effectivePageId,
+          'X-Goog-AuthUser': '0',
+        },
+      },
+    };
+    Object? lastError;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        final res = await _dio
+            .post<String>(
+              url,
+              data: jsonEncode(body),
+              options: Options(
+                headers: headers,
+                responseType: ResponseType.plain,
+              ),
+            )
+            .timeout(callTimeout ?? const Duration(seconds: 15));
+        final data = res.data;
+        if (data == null || data.isEmpty) return const {};
+        final decoded = jsonDecode(data);
+        return decoded is Map<String, dynamic>
+            ? decoded
+            : const {};
+      } on DioException catch (e) {
+        lastError = e;
+        final code = e.response?.statusCode;
+        if (code == 400 || code == 403 || code == 429) {
+          _clearWebConfig();
+        }
+        if (attempt >= maxAttempts ||
+            !_isTransient(code, e)) {
+          if (code != null) {
+            throw InnerTubeHttpException(code);
+          }
+          rethrow;
+        }
+        final backoff =
+            Duration(milliseconds: 250 * (1 << (attempt - 1)));
+        await Future<void>.delayed(
+            backoff + Duration(milliseconds: _jitter(180)));
+      }
+    }
+    throw lastError ?? InnerTubeHttpException(0);
+  }
+
+  static int _jitter(int maxMs) =>
+      maxMs <= 0 ? 0 : Random().nextInt(maxMs + 1);
+
+  static bool _isTransient(int? code, DioException e) {
+    if (code == 408 || code == 429) return true;
+    if (code != null && code >= 500) return true;
+    return e.type == DioExceptionType.connectionError ||
+        e.type == DioExceptionType.connectionTimeout ||
+        e.type == DioExceptionType.receiveTimeout ||
+        e.type == DioExceptionType.sendTimeout;
+  }
+
+  // -- search ----------------------------------------------------------------------
+
+  Future<List<YouTubeMusicTrack>> searchSongs(
+    String query, {
+    int limit = 30,
+    bool prefetchStreams = false,
+  }) async {
+    if (query.trim().isEmpty) return const [];
+    await _ensureConfig();
+    final root = await _post(
+      '$musicApi/search?key=$_apiKey&prettyPrint=false',
+      body: {
+        'context': _webContext(_clientVersion, _visitorData),
+        'query': query.trim(),
+        'params': songsSearchFilter,
+      },
+      clientName: 'WEB_REMIX',
+      clientVersion: _clientVersion,
+      userAgent: webUserAgent,
+    );
+    final results = _parseSongRenderers(root).take(limit).toList();
+    // Limusic behavior: never prefetch search results. Only the next
+    // likely queue track is pre-resolved (see prefetchNextTrack).
+    // The flag is kept for API compatibility but ignored.
+    return results;
+  }
+
+  Future<List<YouTubeMusicEntity>> searchArtists(
+    String query, {
+    int limit = 30,
+  }) =>
+      _searchEntities(query, YouTubeEntityKind.artist,
+          artistSearchFilter, limit);
+
+  Future<List<YouTubeMusicEntity>> searchAlbums(
+    String query, {
+    int limit = 30,
+  }) =>
+      _searchEntities(query, YouTubeEntityKind.album,
+          albumSearchFilter, limit);
+
+  Future<List<YouTubeMusicEntity>> _searchEntities(
+    String query,
+    YouTubeEntityKind kind,
+    String filter,
+    int limit,
+  ) async {
+    if (query.trim().isEmpty) return const [];
+    await _ensureConfig();
+    final root = await _post(
+      '$musicApi/search?key=$_apiKey&prettyPrint=false',
+      body: {
+        'context': _webContext(_clientVersion, _visitorData),
+        'query': query.trim(),
+        'params': filter,
+      },
+      clientName: 'WEB_REMIX',
+      clientVersion: _clientVersion,
+      userAgent: webUserAgent,
+    );
+    return _parseEntityRenderers(root, kind).take(limit).toList();
+  }
+
+  Future<List<YouTubePlaylistSummary>> searchPlaylists(
+    String query, {
+    int limit = 30,
+  }) async {
+    if (query.trim().isEmpty) return const [];
+    await _ensureConfig();
+    Map<String, dynamic>? root;
+    try {
+      root = await _post(
+        '$musicApi/search?key=$_apiKey&prettyPrint=false',
+        body: {
+          'context':
+              _webContext(_clientVersion, _visitorData),
+          'query': query.trim(),
+          'params': playlistSearchFilter,
+        },
+        clientName: 'WEB_REMIX',
+        clientVersion: _clientVersion,
+        userAgent: webUserAgent,
+      );
+    } catch (_) {
+      return const [];
+    }
+    return _parsePlaylistRenderers(root).take(limit).toList();
+  }
+
+  /// YouTube Music autocomplete — not the public YouTube (`ds=yt`)
+  /// complete API, which mixes in games, TV, and unrelated videos.
+  Future<List<String>> getSuggestions(String query) async {
+    final q = query.trim();
+    if (q.length < 2) return const [];
+    try {
+      await _ensureConfig();
+      final root = await _post(
+        '$musicApi/music/get_search_suggestions?key=$_apiKey&prettyPrint=false',
+        body: {
+          'context': _webContext(_clientVersion, _visitorData),
+          'input': q,
+        },
+        clientName: 'WEB_REMIX',
+        clientVersion: _clientVersion,
+        userAgent: webUserAgent,
+      );
+      final out = <String>[];
+      final seen = <String>{};
+      void walk(Object? node) {
+        if (node is Map) {
+          final endpoint = node['searchEndpoint'] ??
+              (node['navigationEndpoint'] is Map
+                  ? (node['navigationEndpoint'] as Map)['searchEndpoint']
+                  : null);
+          if (endpoint is Map) {
+            final text = endpoint['query']?.toString().trim() ?? '';
+            if (text.isNotEmpty && seen.add(text.toLowerCase())) {
+              out.add(text);
+            }
+          }
+          for (final v in node.values) {
+            walk(v);
+          }
+        } else if (node is List) {
+          for (final v in node) {
+            walk(v);
+          }
+        }
+      }
+
+      walk(root['contents'] ?? root);
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  // -- browse ------------------------------------------------------------------------
+
+  /// Titled shelves from the YouTube Music home browse.
+  ///
+  /// Returns an empty list when signed out and the server declines, or
+  /// on any failure - callers render their normal state rather than an
+  /// error, matching the other account surfaces.
+  ///
+  /// [authenticated] is opt-out rather than opt-in because the whole
+  /// point of the home browse is personalization: YTM only returns
+  /// "For you" style shelves when the account jar rides along. Signed
+  /// out, `_post` drops the cookies and YouTube serves its anonymous
+  /// shelves, which is a useful fallback rather than an error.
+  Future<List<YtHomeShelf>> fetchHomeShelves({
+    int maxShelves = 8,
+    int maxItemsPerShelf = 12,
+    bool authenticated = true,
+  }) async {
+    try {
+      await _ensureConfig();
+      final root = await _post(
+        '$musicApi/browse?key=$_apiKey&prettyPrint=false',
+        body: {
+          'context': _webContext(_clientVersion, _visitorData),
+          'browseId': homeBrowseId,
+        },
+        clientName: 'WEB_REMIX',
+        clientVersion: _clientVersion,
+        userAgent: webUserAgent,
+        authenticated: authenticated,
+      );
+      return parseHomeShelves(
+        root,
+        maxShelves: maxShelves,
+        maxItemsPerShelf: maxItemsPerShelf,
+      );
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Browse-id prefix → entity kind.
+  ///
+  /// YouTube Music encodes the entity type in the browse id: `UC` is an
+  /// artist channel and `MPRE` an album, but playlists and radios are
+  /// usually wrapped in a `VL` prefix around the bare form - verified
+  /// against a live home browse, where the same carousel carried both
+  /// `VLPL...` (playlist) and `VLRDCLAK...` (radio). Matching the bare
+  /// form is what keeps a mix from being mislabelled a playlist.
+  ///
+  /// `browseAlbums` only ever sees `MPRE` and hardcodes the kind; the
+  /// home browse returns all of them, so it derives it here.
+  static YouTubeEntityKind kindForBrowseId(String browseId) {
+    if (browseId.startsWith('UC')) return YouTubeEntityKind.artist;
+    final bare =
+        browseId.startsWith('VL') ? browseId.substring(2) : browseId;
+    if (bare.startsWith('PL')) return YouTubeEntityKind.playlist;
+    if (bare.startsWith('RD')) return YouTubeEntityKind.mix;
+    return YouTubeEntityKind.album;
+  }
+
+  /// Whether an id is the account's Liked Music auto playlist
+  /// (`VLLM` browse form / `LM` playlist form). It has its own homes
+  /// in the app (`/liked` plus the YT liked surface) and renders as a
+  /// bare thumbs-up auto-playlist page, so home shelves drop the card.
+  static bool isLikedMusicId(String id) {
+    final bare = id.startsWith('VL') ? id.substring(2) : id;
+    return bare == 'LM';
+  }
+
+  /// Parse a home-browse response into titled shelves. Pure - no
+  /// network - so it is unit tested over a captured fixture.
+  ///
+  /// Anonymous responses wrap sections in
+  /// `singleColumnBrowseResultsRenderer`; the tabbed account variant
+  /// uses `twoColumnBrowseResultsRenderer`, so the section list is
+  /// located by key rather than by walking a fixed path.
+  List<YtHomeShelf> parseHomeShelves(
+    Map<String, dynamic> root, {
+    int maxShelves = 8,
+    int maxItemsPerShelf = 12,
+  }) {
+    if (maxShelves <= 0) return const [];
+    final shelves = <YtHomeShelf>[];
+    final sectionLists = <Map<String, dynamic>>[];
+    _collectObjects(root, 'sectionListRenderer', sectionLists);
+    for (final list in sectionLists) {
+      final contents = list['contents'];
+      if (contents is! List) continue;
+      for (final section in contents) {
+        if (section is! Map<String, dynamic>) continue;
+        final shelf = _parseHomeSection(
+          section,
+          maxItemsPerShelf: maxItemsPerShelf,
+        );
+        // A shelf that yielded no rows or cards would render as a bare
+        // header - drop it instead.
+        if (shelf == null || !shelf.isRenderable) continue;
+        shelves.add(shelf);
+        if (shelves.length >= maxShelves) return shelves;
+      }
+    }
+    return shelves;
+  }
+
+  YtHomeShelf? _parseHomeSection(
+    Map<String, dynamic> section, {
+    required int maxItemsPerShelf,
+  }) {
+    final songShelf = section['musicShelfRenderer'];
+    if (songShelf is Map<String, dynamic>) {
+      final tracks = _parseSongRenderers(songShelf)
+          .take(maxItemsPerShelf)
+          .toList();
+      if (tracks.isEmpty) return null;
+      return YtHomeShelf(
+        title: _homeShelfTitle(songShelf['title']) ?? 'Songs',
+        tracks: tracks,
+      );
+    }
+
+    final carousel = section['musicCarouselShelfRenderer'];
+    if (carousel is Map<String, dynamic>) {
+      final header = carousel['header'];
+      String? title;
+      String subtitle = '';
+      if (header is Map<String, dynamic>) {
+        for (final key in const [
+          'musicCarouselShelfBasicHeaderRenderer',
+          'musicDetailHeaderRenderer',
+        ]) {
+          final h = header[key];
+          if (h is! Map<String, dynamic>) continue;
+          title ??= _homeShelfTitle(h['title']);
+          if (subtitle.isEmpty) {
+            subtitle = _homeShelfTitle(h['straplineTextOne']) ??
+                _homeShelfTitle(h['straplineTextTwo']) ??
+                '';
+          }
+        }
+      }
+      final contents = carousel['contents'];
+      final entities = <YouTubeMusicEntity>[];
+      final trackCards = <YouTubeMusicTrack>[];
+      if (contents is List) {
+        for (final item in contents) {
+          if (item is! Map<String, dynamic>) continue;
+          final twoRow = item['musicTwoRowItemRenderer'];
+          if (twoRow is! Map<String, dynamic>) continue;
+          final browseId =
+              (((twoRow['navigationEndpoint'] as Map?)?['browseEndpoint']
+                          as Map?)?['browseId'])
+                      ?.toString() ??
+                  '';
+          if (browseId.isNotEmpty) {
+            final entity = _parseTwoRowEntity(
+              twoRow,
+              kind: kindForBrowseId(browseId),
+            );
+            // Liked Music has dedicated homes in the app - never a
+            // shelf card (it renders as a bare auto-playlist page).
+            if (entity == null ||
+                isLikedMusicId(entity.browseId) ||
+                isLikedMusicId(entity.playlistId)) {
+              continue;
+            }
+            entities.add(entity);
+          } else {
+            // No browse endpoint: a playlist-only card (recap) when
+            // the watch endpoint carries just a playlist id, else a
+            // song card. Video id wins the tiebreak: song cards often
+            // carry a queue-context playlist id that is not browsable
+            // on its own.
+            final watch =
+                twoRow['navigationEndpoint'] as Map?;
+            final watchPlaylistId =
+                (watch?['watchEndpoint'] as Map?)?['playlistId']
+                        ?.toString() ??
+                    '';
+            final watchVideoId =
+                (watch?['watchEndpoint'] as Map?)?['videoId']
+                        ?.toString() ??
+                    '';
+            if (watchVideoId.isNotEmpty ||
+                watchPlaylistId.isEmpty) {
+              final song = _parseTwoRowSong(twoRow);
+              if (song != null) trackCards.add(song);
+            } else {
+              final entity = _parseTwoRowEntity(
+                twoRow,
+                kind: kindForBrowseId(watchPlaylistId),
+              );
+              if (entity == null ||
+                  isLikedMusicId(entity.browseId) ||
+                  isLikedMusicId(entity.playlistId)) {
+                continue;
+              }
+              entities.add(entity);
+            }
+          }
+          if (entities.length + trackCards.length >=
+              maxItemsPerShelf) {
+            break;
+          }
+        }
+      }
+      if (entities.isEmpty && trackCards.isEmpty) return null;
+      return YtHomeShelf(
+        title: title ?? '',
+        subtitle: subtitle,
+        entities: entities,
+        trackCards: trackCards,
+      );
+    }
+
+    // `musicTastebuilderShelfRenderer` (the "Made for you" picker) and
+    // ad slots are not shelves we can render - skipped, not guessed at.
+    return null;
+  }
+
+  /// Shelf/header title, accepting both `{text}` and `{runs:[{text}]}`.
+  String? _homeShelfTitle(Object? node) {
+    if (node is! Map<String, dynamic>) return null;
+    final text = node['text']?.toString().trim() ?? '';
+    if (text.isNotEmpty) return text;
+    final runs = _runsText(node['runs']);
+    if (runs == null) return null;
+    final trimmed = runs.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  Future<List<YouTubeMusicTrack>> browseSongs(
+    String browseId, {
+    String? params,
+    int? limit,
+  }) async {
+    if (browseId.trim().isEmpty) {
+      throw ArgumentError('Missing YouTube Music browse id');
+    }
+    await _ensureConfig();
+    final root = await _post(
+      '$musicApi/browse?key=$_apiKey&prettyPrint=false',
+      body: {
+        'context': _webContext(_clientVersion, _visitorData),
+        'browseId': browseId,
+        if (params != null && params.isNotEmpty)
+          'params': params,
+      },
+      clientName: 'WEB_REMIX',
+      clientVersion: _clientVersion,
+      userAgent: webUserAgent,
+      // Account surface when connected, exactly as `browseAlbums`
+      // already does: charts, home and album-track browse all
+      // personalize server-side when the jar is present, and `_post`
+      // drops the cookies when disconnected so this is fail-open.
+      authenticated: true,
+    );
+    final result = await _collectBrowseSongPages(root, limit);
+    return result.tracks;
+  }
+
+  /// Browse an album page: header metadata (title/artist/artwork/year)
+  /// plus tracks with header metadata inherited where the per-row
+  /// renderer omits it (artist, album, artwork) — which is the norm
+  /// for single-artist album pages.
+  Future<YouTubeAlbumResult?> browseAlbum(
+    String browseId, {
+    int? limit,
+  }) async {
+    if (browseId.trim().isEmpty) return null;
+    await _ensureConfig();
+    Map<String, dynamic> root;
+    try {
+      root = await _post(
+        '$musicApi/browse?key=$_apiKey&prettyPrint=false',
+        body: {
+          'context': _webContext(_clientVersion, _visitorData),
+          'browseId': browseId,
+        },
+        clientName: 'WEB_REMIX',
+        clientVersion: _clientVersion,
+        userAgent: webUserAgent,
+        // Same account surface as `browseSongs` / `browseAlbums`.
+        authenticated: true,
+      );
+    } catch (_) {
+      return null;
+    }
+    final header = _playlistHeader(root);
+    final title = _extractTitleFromHeader(header, root) ?? '';
+    final artist = _albumHeaderArtist(header) ?? '';
+    final artwork = _extractArtworkFromHeader(header, root) ?? '';
+    var year = '';
+    final subtitleRuns =
+        ((header?['subtitle']) as Map?)?['runs'];
+    if (subtitleRuns is List) {
+      for (final run in subtitleRuns.whereType<Map>()) {
+        final text = run['text']?.toString().trim() ?? '';
+        if (RegExp(r'^\d{4}$').hasMatch(text)) {
+          year = text;
+          break;
+        }
+      }
+    }
+    final pages = await _collectBrowseSongPages(root, limit);
+    final tracks = pages.tracks
+        .map((t) => YouTubeMusicTrack(
+              videoId: t.videoId,
+              title: t.title,
+              artist: t.artist.isEmpty || t.artist == 'Unknown artist'
+                  ? (artist.isNotEmpty ? artist : t.artist)
+                  : t.artist,
+              album: t.album.isEmpty ? title : t.album,
+              artworkUrl: t.artworkUrl.isNotEmpty
+                  ? t.artworkUrl
+                  : artwork,
+              durationSeconds: t.durationSeconds,
+            ))
+        .toList();
+    return YouTubeAlbumResult(
+      browseId: browseId,
+      title: title,
+      artist: artist,
+      artworkUrl: artwork,
+      year: year,
+      tracks: tracks,
+    );
+  }
+
+  /// Album header subtitle runs look like ["Album", " • ", "Future",
+  /// " • ", "2015"] — the artist is the run whose browse endpoint is a
+  /// channel (UC…). Falls back to the first non-label run.
+  String? _albumHeaderArtist(Map<String, dynamic>? header) {
+    if (header == null) return null;
+    const labels = {'album', 'single', 'ep', 'song', 'playlist'};
+    for (final key in ['subtitle', 'straplineTextOne']) {
+      final runs = (header[key] as Map?)?['runs'];
+      if (runs is! List) continue;
+      // Prefer a run linked to an artist channel.
+      for (final run in runs.whereType<Map>()) {
+        final bid = ((run['navigationEndpoint'] as Map?)?[
+                'browseEndpoint'] as Map?)?['browseId']
+            ?.toString();
+        if (bid != null && bid.startsWith('UC')) {
+          final text = run['text']?.toString().trim() ?? '';
+          if (text.isNotEmpty) return text;
+        }
+      }
+      // Otherwise the first run that is not a type label/separator.
+      for (final run in runs.whereType<Map>()) {
+        final text = run['text']?.toString().trim() ?? '';
+        if (text.isEmpty) continue;
+        final lower = text.toLowerCase();
+        if (labels.contains(lower) ||
+            lower == '•' ||
+            RegExp(r'^\d{4}$').hasMatch(text)) {
+          continue;
+        }
+        return text;
+      }
+    }
+    return null;
+  }
+
+  Future<_BrowsePages> _collectBrowseSongPages(
+      Map<String, dynamic> root, int? limit,
+      {bool authenticated = false}) async {
+    final shelves = <Map<String, dynamic>>[];
+    _collectObjects(root, 'musicPlaylistShelfRenderer', shelves);
+    if (shelves.isEmpty) {
+      _collectObjects(root, 'musicShelfRenderer', shelves);
+    }
+    Map<String, dynamic>? primary;
+    for (final shelf in shelves) {
+      final heading = _runsText(
+          (shelf['title'] as Map?)?['runs']);
+      if (heading != null &&
+          (heading.toLowerCase() == 'songs' ||
+              heading.toLowerCase() == 'tracks')) {
+        primary = shelf;
+        break;
+      }
+    }
+    primary ??= shelves.isNotEmpty ? shelves.first : null;
+
+    final songs = <YouTubeMusicTrack>[];
+    songs.addAll(_parseSongRenderers(primary ?? root));
+    if (primary == null) {
+      final take = limit ?? songs.length;
+      return _BrowsePages(
+          songs.take(take).toList(), false);
+    }
+    var token = _playlistTrackContinuationToken(primary);
+    final seenTokens = <String>{};
+    final knownIds = songs.map((s) => s.videoId).toSet();
+    var page = 0;
+    final maxPages =
+        limit != null ? min(8, (limit ~/ 20) + 1) : 6;
+    while (token != null &&
+        token.isNotEmpty &&
+        page < maxPages &&
+        (limit == null || songs.length < limit)) {
+      if (!seenTokens.add(token)) break;
+      Map<String, dynamic>? nextPage;
+      try {
+        nextPage = await _browseContinuation(token,
+            authenticated: authenticated);
+      } catch (_) {
+        break;
+      }
+      final containers = _playlistTrackContainers(nextPage);
+      if (containers.isEmpty) break;
+      for (final s in containers.expand(_parseSongRenderers)) {
+        if (knownIds.add(s.videoId)) songs.add(s);
+      }
+      token = containers
+          .map(_playlistTrackContinuationToken)
+          .firstWhere((t) => t != null && t.isNotEmpty,
+              orElse: () => null);
+      page++;
+    }
+    final result =
+        limit != null ? songs.take(limit).toList() : songs;
+    return _BrowsePages(
+        result,
+        (token == null || token.isEmpty) &&
+            result.length == songs.length);
+  }
+
+  /// Anonymous radio for a seed video (cookie-free by design).
+  Future<List<YouTubeMusicTrack>> fetchRelatedSongs(
+    String videoId, {
+    int limit = 30,
+    bool prefetchStreams = false,
+  }) async {
+    if (videoId.trim().isEmpty || limit <= 0) return const [];
+    await _ensureConfig();
+    final root = await _post(
+      '$musicApi/next?key=$_apiKey&prettyPrint=false',
+      body: {
+        'context': _webContext(_clientVersion, _visitorData),
+        'videoId': videoId,
+        'playlistId': 'RDAMVM$videoId',
+        'params': 'wAEB',
+        'isAudioOnly': true,
+      },
+      clientName: 'WEB_REMIX',
+      clientVersion: _clientVersion,
+      userAgent: webUserAgent,
+      callTimeout: const Duration(seconds: 8),
+    );
+    final results = _parseSongRenderers(root)
+        .where((t) => t.videoId != videoId)
+        .take(limit)
+        .toList();
+    return results;
+  }
+
+  /// Rich metadata for a single video ID (player videoDetails,
+  /// falling back to oEmbed).
+  Future<YouTubeMusicTrack?> fetchSongDetails(
+      String videoId) async {
+    if (videoId.trim().isEmpty) return null;
+    try {
+      await _ensureConfig();
+      final root = await _post(
+        '$musicApi/player?key=$_apiKey&prettyPrint=false',
+        body: {
+          'context':
+              _webContext(_clientVersion, _visitorData),
+          'videoId': videoId,
+        },
+        clientName: 'WEB_REMIX',
+        clientVersion: _clientVersion,
+        userAgent: webUserAgent,
+      );
+      final details = root['videoDetails'] as Map?;
+      var title = details?['title']?.toString();
+      var artist = details?['author']?.toString() ?? '';
+      final duration = int.tryParse(
+              details?['lengthSeconds']?.toString() ?? '') ??
+          0;
+      final thumbs =
+          (details?['thumbnail'] as Map?)?['thumbnails'];
+      String? artwork;
+      if (thumbs is List && thumbs.isNotEmpty) {
+        artwork = (thumbs.last as Map?)?['url']?.toString();
+      }
+      if (title != null &&
+          title.isNotEmpty &&
+          artist.isNotEmpty) {
+        if (artist.endsWith(' - Topic')) {
+          artist =
+              artist.substring(0, artist.length - 8).trim();
+        }
+        if (title.contains(' - ')) {
+          final parts = title.split(' - ');
+          final head = parts.first.trim();
+          if (artist.isEmpty ||
+              artist == 'YouTube Music' ||
+              artist.toLowerCase() == head.toLowerCase()) {
+            artist = head;
+            title = parts.sublist(1).join(' - ').trim();
+          }
+        }
+        return YouTubeMusicTrack(
+          videoId: videoId,
+          title: title,
+          artist: artist,
+          artworkUrl: artwork ??
+              'https://i.ytimg.com/vi/$videoId/hqdefault.jpg',
+          durationSeconds: duration,
+        );
+      }
+    } catch (_) {}
+    try {
+      final res = await _dio.get<String>(
+        'https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=$videoId&format=json',
+        options: Options(headers: {
+          'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        }),
+      );
+      final obj = jsonDecode(res.data ?? '{}');
+      if (obj is! Map<String, dynamic>) return null;
+      final rawTitle = obj['title']?.toString() ?? '';
+      var author =
+          (obj['author_name']?.toString() ?? '').trim();
+      if (author.endsWith(' - Topic')) {
+        author = author.substring(0, author.length - 8).trim();
+      }
+      final thumbnail = obj['thumbnail_url']?.toString() ??
+          'https://i.ytimg.com/vi/$videoId/hqdefault.jpg';
+      var finalTitle = rawTitle;
+      var finalArtist =
+          author.isEmpty ? 'YouTube Music' : author;
+      if (rawTitle.contains(' - ')) {
+        final parts = rawTitle.split(' - ');
+        finalArtist = parts.first.trim();
+        finalTitle = parts.sublist(1).join(' - ').trim();
+      }
+      if (finalTitle.isEmpty) return null;
+      return YouTubeMusicTrack(
+        videoId: videoId,
+        title: finalTitle,
+        artist: finalArtist,
+        artworkUrl: thumbnail,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // -- playlists -----------------------------------------------------------------------
+
+  String extractPlaylistId(String input) {
+    final clean = input.trim();
+    if (clean.contains('list=')) {
+      return clean
+          .split('list=')
+          .sublist(1)
+          .join('list=')
+          .split('&')
+          .first
+          .split('#')
+          .first;
+    }
+    if (clean.contains('playlist/')) {
+      return clean
+          .split('playlist/')
+          .sublist(1)
+          .join('playlist/')
+          .split('?')
+          .first
+          .split('/')
+          .first;
+    }
+    return clean;
+  }
+
+  String _playlistBrowseId(String rawId) {
+    if (rawId.startsWith('VL') ||
+        rawId.startsWith('FE') ||
+        rawId.startsWith('MPRE') ||
+        rawId.startsWith('UC')) {
+      return rawId;
+    }
+    // RDCLAK mixes (auto-generated radio) are browsed as VLRDCLAK…
+    // Previous code sent RDCLAK… without VL → 400 on both
+    // music.youtube.com and www.youtube.com.
+    return 'VL$rawId';
+  }
+
+  Future<YouTubePlaylistResult?> fetchPlaylist(
+    String playlistIdOrUrl, {
+    int? maxTracks,
+  }) async {
+    final rawId = extractPlaylistId(playlistIdOrUrl);
+    if (rawId.isEmpty) return null;
+    final browseId = _playlistBrowseId(rawId);
+    final rootResult = await _fetchPlaylistRoot(browseId);
+    if (rootResult == null) return null;
+    final root = rootResult.root;
+    final authenticatedAs = rootResult.authenticated;
+    final header = _playlistHeader(root);
+    final title = _extractTitleFromHeader(header, root);
+    String? author;
+    if (header is Map<String, dynamic>) {
+      author = _firstRunText(header['subtitle']) ??
+          _firstRunText(header['straplineTextOne']) ??
+          _findFirstAuthor(header);
+    } else {
+      author = _findFirstAuthor(header);
+    }
+    final artworkUrl = _extractArtworkFromHeader(header, root);
+    final trackLimit =
+        maxTracks != null && maxTracks >= 1 ? maxTracks : null;
+    final playlistPage = browseId.startsWith('VL');
+    List<Object?> containersFor(Object? page) => playlistPage
+        ? _playlistTrackContainers(page)
+        : [page];
+    final containers = containersFor(root);
+    if (containers.isEmpty) return null;
+    final songs = <YouTubeMusicTrack>[];
+    final knownIds = <String>{};
+    for (final s in containers.expand(_parseSongRenderers)) {
+      if (knownIds.add(s.videoId)) songs.add(s);
+    }
+    var limited = trackLimit != null
+        ? songs.take(trackLimit).toList()
+        : List<YouTubeMusicTrack>.of(songs);
+    String? token = _continuationToken(containers, playlistPage);
+    final seenTokens = <String>{};
+    var page = 0;
+    while (token != null &&
+        token.isNotEmpty &&
+        page < _maxContinuationPages &&
+        (trackLimit == null || songs.length < trackLimit)) {
+      if (!seenTokens.add(token)) return null;
+      Map<String, dynamic>? nextPage;
+      try {
+        nextPage = await _browseContinuation(token,
+            authenticated: authenticatedAs);
+      } catch (_) {
+        return null;
+      }
+      final pageContainers = containersFor(nextPage);
+      if (pageContainers.isEmpty) return null;
+      for (final s in pageContainers.expand(_parseSongRenderers)) {
+        if (knownIds.add(s.videoId)) songs.add(s);
+      }
+      if (trackLimit != null) {
+        limited = songs.take(trackLimit).toList();
+      } else {
+        limited = List.of(songs);
+      }
+      token = _continuationToken(pageContainers, playlistPage);
+      page++;
+    }
+    if (token != null &&
+        token.isNotEmpty &&
+        (trackLimit == null || songs.length < trackLimit)) {
+      return null;
+    }
+    return YouTubePlaylistResult(
+      id: rawId,
+      title: title ?? '',
+      author: author ?? '',
+      artworkUrl: artworkUrl ?? '',
+      trackCount: songs.length,
+      tracks: limited,
+    );
+  }
+
+  Future<String?> fetchPlaylistArtwork(
+      String playlistIdOrUrl) async {
+    final rawId = extractPlaylistId(playlistIdOrUrl);
+    if (rawId.isEmpty) return null;
+    final rootResult =
+        await _fetchPlaylistRoot(_playlistBrowseId(rawId));
+    if (rootResult == null) return null;
+    return _extractArtworkFromHeader(
+            _playlistHeader(rootResult.root), rootResult.root) ??
+        _parseSongRenderers(rootResult.root)
+            .map((s) => s.artworkUrl)
+            .firstWhere((u) => u.isNotEmpty,
+                orElse: () => '');
+  }
+
+  Future<_PlaylistRoot?> _fetchPlaylistRoot(
+      String browseId) async {
+    // YouTube Music playlists on music.youtube.com, regular YouTube
+    // playlists (e.g. Pop Hits RDCLAK → VLRDCLAK) 400 on music and
+    // need www.youtube.com fallback.
+    if (_connection.connected) {
+      try {
+        final root =
+            await _browseRoot(browseId, authenticated: true);
+        return _PlaylistRoot(root, true);
+      } catch (_) {}
+      try {
+        final root =
+            await _browseRootYoutube(browseId, authenticated: true);
+        return _PlaylistRoot(root, true);
+      } catch (_) {}
+    }
+    try {
+      final root =
+          await _browseRoot(browseId, authenticated: false);
+      return _PlaylistRoot(root, false);
+    } catch (_) {}
+    try {
+      final root =
+          await _browseRootYoutube(browseId, authenticated: false);
+      return _PlaylistRoot(root, false);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<_Map> _browseRoot(String browseId,
+      {required bool authenticated}) async {
+    await _ensureConfig();
+    return _post(
+      '$musicApi/browse?key=$_apiKey&prettyPrint=false',
+      body: {
+        'context': _webContext(_clientVersion, _visitorData),
+        'browseId': browseId,
+      },
+      clientName: 'WEB_REMIX',
+      clientVersion: _clientVersion,
+      userAgent: webUserAgent,
+      authenticated: authenticated,
+    );
+  }
+
+  Future<_Map> _browseRootYoutube(String browseId,
+      {required bool authenticated}) async {
+    await _ensureConfig();
+    // Fallback for regular YouTube playlists (e.g. Pop Hits) that 400
+    // on music.youtube.com. Origin/Referer MUST match the www host —
+    // the WEB_REMIX default (music.youtube.com) gets rejected with
+    // "Origin doesn't match Host".
+    return _post(
+      '$youtubeApi/browse?key=$_apiKey&prettyPrint=false',
+      body: {
+        'context': _webContext(_clientVersion, _visitorData),
+        'browseId': browseId,
+      },
+      clientName: 'WEB_REMIX',
+      clientVersion: _clientVersion,
+      userAgent: webUserAgent,
+      authenticated: authenticated,
+      origin: youtubeOrigin,
+      referer: '$youtubeOrigin/',
+    );
+  }
+
+  Future<_Map> _browseContinuation(String token,
+      {required bool authenticated}) async {
+    await _ensureConfig();
+    return _post(
+      '$musicApi/browse?key=$_apiKey&prettyPrint=false',
+      body: {
+        'context': _webContext(_clientVersion, _visitorData),
+        'continuation': token,
+      },
+      clientName: 'WEB_REMIX',
+      clientVersion: _clientVersion,
+      userAgent: webUserAgent,
+      authenticated: authenticated,
+    );
+  }
+
+  String? _continuationToken(
+      List<Object?> containers, bool playlistPage) {
+    for (final c in containers) {
+      final t = playlistPage
+          ? _playlistTrackContinuationToken(c)
+          : _genericContinuationToken(c);
+      if (t != null && t.isNotEmpty) return t;
+    }
+    return null;
+  }
+
+  List<Object?> _playlistTrackContainers(Object? root) {
+    final shelves = <Map<String, dynamic>>[];
+    _collectObjects(root, 'musicPlaylistShelfRenderer', shelves);
+    _collectObjects(
+        root, 'musicPlaylistShelfContinuation', shelves);
+    _collectObjects(root, 'playlistVideoListRenderer', shelves);
+    _collectObjects(
+        root, 'playlistVideoListContinuation', shelves);
+    if (shelves.isNotEmpty) return shelves;
+    final musicShelves = <Map<String, dynamic>>[];
+    _collectObjects(root, 'musicShelfRenderer', musicShelves);
+    for (final shelf in musicShelves) {
+      if (_parseSongRenderers(shelf).isNotEmpty) {
+        return [shelf];
+      }
+    }
+    if (root is Map) {
+      final conts = root['continuationContents'];
+      if (conts is Map &&
+          conts['musicShelfContinuation'] is Map) {
+        return [conts['musicShelfContinuation']!];
+      }
+    }
+    final out = <Object?>[];
+    for (final key in [
+      'onResponseReceivedActions',
+      'onResponseReceivedEndpoints',
+      'onResponseReceivedCommands'
+    ]) {
+      final arr = root is Map ? root[key] : null;
+      if (arr is! List) continue;
+      for (final action in arr) {
+        if (action is! Map) continue;
+        final items = (action['appendContinuationItemsAction']
+                as Map?)?['continuationItems'] ??
+            (action['reloadContinuationItemsCommand']
+                as Map?)?['continuationItems'];
+        if (items != null) out.add(items);
+      }
+    }
+    return out;
+  }
+
+  String? _firstRunText(Object? node) {
+    if (node is! Map) return null;
+    final runs = node['runs'];
+    if (runs is! List || runs.isEmpty) return null;
+    final first = runs.first;
+    if (first is! Map) return null;
+    final text = first['text']?.toString();
+    return (text != null && text.isNotEmpty) ? text : null;
+  }
+
+  String? _playlistTrackContinuationToken(Object? container) {
+    final contents = container is List
+        ? container
+        : (container is Map
+            ? container['contents'] as List?
+            : null);
+    Object? last;
+    if (contents != null && contents.isNotEmpty) {
+      last = contents.last;
+    }
+    Map<String, dynamic>? endpoint;
+    if (last is Map<String, dynamic>) {
+      final cont = (last['continuationItemRenderer']
+          as Map?)?['continuationEndpoint'];
+      if (cont is Map<String, dynamic>) endpoint = cont;
+    }
+    if (endpoint != null) {
+      final commands = <Map<String, dynamic>>[];
+      _collectObjects(endpoint, 'continuationCommand', commands);
+      for (final command in commands) {
+        final token = command['token']?.toString();
+        final request = command['request']?.toString();
+        if (token != null &&
+            token.isNotEmpty &&
+            (request == null ||
+                request == 'CONTINUATION_REQUEST_TYPE_BROWSE')) {
+          return token;
+        }
+      }
+    }
+    if (container is Map) {
+      final conts = container['continuations'];
+      if (conts is List) {
+        for (final c in conts) {
+          final token = (c is Map
+                  ? (c['nextContinuationData'] as Map?)
+                  : null)?['continuation']
+              ?.toString();
+          if (token != null && token.isNotEmpty) return token;
+        }
+      }
+    }
+    return null;
+  }
+
+  String? _genericContinuationToken(Object? root) {
+    final commands = <Map<String, dynamic>>[];
+    _collectObjects(root, 'continuationCommand', commands);
+    for (final cmd in commands) {
+      final token = cmd['token']?.toString();
+      if (token != null && token.isNotEmpty) return token;
+    }
+    return null;
+  }
+
+  Map<String, dynamic>? _playlistHeader(Object? root) {
+    Map<String, dynamic>? firstHeader(List<String> keys) {
+      for (final k in keys) {
+        final found = <Map<String, dynamic>>[];
+        _collectObjects(root, k, found);
+        if (found.isNotEmpty) return found.first;
+      }
+      return null;
+    }
+
+    if (root is Map<String, dynamic>) {
+      final header = root['header'];
+      if (header is Map<String, dynamic>) {
+        Map<String, dynamic>? at(List<String> path) {
+          Object? node = header;
+          for (final p in path) {
+            node = node is Map ? node[p] : null;
+          }
+          return node is Map<String, dynamic> ? node : null;
+        }
+
+        return at(['musicDetailHeaderRenderer']) ??
+            at(['musicResponsiveHeaderRenderer']) ??
+            at([
+              'musicEditablePlaylistDetailHeaderRenderer',
+              'header',
+              'musicResponsiveHeaderRenderer'
+            ]) ??
+            at([
+              'musicEditablePlaylistDetailHeaderRenderer',
+              'header',
+              'musicDetailHeaderRenderer'
+            ]) ??
+            at(['musicEditablePlaylistDetailHeaderRenderer']) ??
+            at(['musicVisualHeaderRenderer']) ??
+            at(['musicHeaderRenderer']) ??
+            at(['playlistHeaderRenderer']) ??
+            firstHeader([
+              'musicResponsiveHeaderRenderer',
+              'musicDetailHeaderRenderer',
+              'musicEditablePlaylistDetailHeaderRenderer',
+              'musicVisualHeaderRenderer',
+              'musicHeaderRenderer',
+            ]);
+      }
+    }
+    return firstHeader([
+      'musicResponsiveHeaderRenderer',
+      'musicDetailHeaderRenderer',
+      'musicEditablePlaylistDetailHeaderRenderer',
+      'musicVisualHeaderRenderer',
+      'musicHeaderRenderer',
+    ]);
+  }
+
+  String? _extractTitleFromHeader(
+      Map<String, dynamic>? header, Object? root) {
+    if (header != null) {
+      final runs =
+          (header['title'] as Map?)?['runs'];
+      if (runs is List) {
+        final text = runs
+            .whereType<Map>()
+            .map((r) => r['text']?.toString() ?? '')
+            .join()
+            .trim();
+        if (text.isNotEmpty) return text;
+      }
+      Map<String, dynamic>? nestedHeader() {
+        final h = header['header'];
+        if (h is! Map) return null;
+        for (final k in [
+          'musicResponsiveHeaderRenderer',
+          'musicDetailHeaderRenderer'
+        ]) {
+          if (h[k] is Map<String, dynamic>) {
+            return h[k] as Map<String, dynamic>;
+          }
+        }
+        return h is Map<String, dynamic> ? h : null;
+      }
+
+      final nested = nestedHeader();
+      if (nested != null) {
+        final runs2 =
+            (nested['title'] as Map?)?['runs'];
+        if (runs2 is List) {
+          final text = runs2
+              .whereType<Map>()
+              .map((r) => r['text']?.toString() ?? '')
+              .join()
+              .trim();
+          if (text.isNotEmpty) return text;
+        }
+      }
+      final simple =
+          (header['title'] as Map?)?['simpleText']?.toString() ??
+              header['title']?.toString();
+      if (simple != null && simple.isNotEmpty) {
+        return simple.trim();
+      }
+    }
+    final titles = <Map<String, dynamic>>[];
+    _collectObjects(
+        root, 'musicResponsiveHeaderRenderer', titles);
+    for (final h in titles) {
+      final runs = (h['title'] as Map?)?['runs'];
+      if (runs is List) {
+        final text = runs
+            .whereType<Map>()
+            .map((r) => r['text']?.toString() ?? '')
+            .join()
+            .trim();
+        if (text.isNotEmpty) return text;
+      }
+    }
+    return null;
+  }
+
+  String? _findFirstAuthor(Map<String, dynamic>? header) {
+    if (header == null) return null;
+    for (final k in [
+      'subtitle',
+      'straplineTextOne',
+      'secondSubtitle'
+    ]) {
+      final runs = (header[k] as Map?)?['runs'];
+      if (runs is List && runs.isNotEmpty) {
+        final text =
+            (runs.first as Map?)?['text']?.toString();
+        if (text != null && text.isNotEmpty) return text;
+      }
+    }
+    return null;
+  }
+
+  String? _extractArtworkFromHeader(
+      Map<String, dynamic>? header, Object? root) {
+    if (header != null) {
+      final direct = _extractThumbnailsUrl(header);
+      if (direct != null) return direct;
+    }
+    for (final k in [
+      'musicResponsiveHeaderRenderer',
+      'musicDetailHeaderRenderer',
+      'musicEditablePlaylistDetailHeaderRenderer',
+      'musicVisualHeaderRenderer',
+      'musicThumbnailRenderer',
+    ]) {
+      final found = <Map<String, dynamic>>[];
+      _collectObjects(root, k, found);
+      for (final f in found) {
+        final url = _extractThumbnailsUrl(f);
+        if (url != null) return url;
+      }
+    }
+    return null;
+  }
+
+  // -- album grids (desktop helper over shared parsers) --------------------------
+
+  Future<List<YouTubeMusicEntity>> browseAlbums(
+    String browseId, {
+    int limit = 30,
+  }) async {
+    await _ensureConfig();
+    final root = await _post(
+      '$musicApi/browse?key=$_apiKey&prettyPrint=false',
+      body: {
+        'context': _webContext(_clientVersion, _visitorData),
+        'browseId': browseId,
+      },
+      clientName: 'WEB_REMIX',
+      clientVersion: _clientVersion,
+      userAgent: webUserAgent,
+      // Account surface when connected: the new-releases shelf (and
+      // Explore-style shelves) personalize server-side like ytmusic.com.
+      // Anonymous otherwise — `_post` only attaches cookies when
+      // connected, so this is fail-open.
+      authenticated: true,
+    );
+    final out = <YouTubeMusicEntity>[];
+    final queue = <Object?>[root];
+    while (queue.isNotEmpty) {
+      final current = queue.removeLast();
+      if (current is Map<String, dynamic>) {
+        if (current.containsKey('musicTwoRowItemRenderer')) {
+          final entity = _parseTwoRowEntity(current[
+              'musicTwoRowItemRenderer'] as Map<String, dynamic>);
+          if (entity != null) out.add(entity);
+        } else {
+          queue.addAll(current.values.take(300));
+        }
+      } else if (current is List) {
+        queue.addAll(current.take(300));
+      }
+      if (out.length >= limit) break;
+    }
+    return out.take(limit).toList();
+  }
+
+  /// Parse one `musicTwoRowItemRenderer`.
+  ///
+  /// [kind] defaults to [YouTubeEntityKind.album] because every caller
+  /// outside the home browse comes from a browse id that is already
+  /// known to be an album grid. The home shelves pass the kind derived
+  /// from the browse id instead, since they mix albums, playlists and
+  /// mixes in one carousel.
+  /// Parse one song `musicTwoRowItemRenderer` (carousel card backed
+  /// by a watch endpoint, no browse endpoint). Subtitles read
+  /// "Song • Artist" (sometimes with a trailing album run), so the
+  /// artist is the segment after the type token.
+  YouTubeMusicTrack? _parseTwoRowSong(Map<String, dynamic> r) {
+    final videoId =
+        ((r['navigationEndpoint'] as Map?)?['watchEndpoint']
+                    as Map?)?['videoId']
+                ?.toString() ??
+            '';
+    if (videoId.isEmpty) return null;
+    final titleObj = r['title'];
+    String title = '';
+    if (titleObj is Map) {
+      title = titleObj['text']?.toString() ??
+          _runsText(titleObj['runs']) ??
+          '';
+      title = title.trim();
+    }
+    if (title.isEmpty) return null;
+    var artist = '';
+    final subtitleObj = r['subtitle'];
+    if (subtitleObj is Map) {
+      final text = subtitleObj['text']?.toString() ??
+          _runsText(subtitleObj['runs']) ??
+          '';
+      final parts =
+          text.split('•').map((s) => s.trim()).toList();
+      if (parts.isNotEmpty) {
+        const types = {'song', 'video', 'single', 'ep', 'album'};
+        if (parts.length > 1 &&
+            types.contains(parts.first.toLowerCase())) {
+          artist = parts[1];
+        } else {
+          artist = parts.first;
+        }
+      }
+    }
+    if (artist.isEmpty) artist = 'Unknown artist';
+    return YouTubeMusicTrack(
+      videoId: videoId,
+      title: title,
+      artist: artist,
+      artworkUrl: _extractThumbnailsUrl(r) ?? '',
+    );
+  }
+
+  YouTubeMusicEntity? _parseTwoRowEntity(
+    Map<String, dynamic> r, {
+    YouTubeEntityKind kind = YouTubeEntityKind.album,
+  }) {
+    final titleObj = r['title'];
+    String name = '';
+    if (titleObj is Map) {
+      name = titleObj['text']?.toString() ??
+          _runsText(titleObj['runs']) ??
+          '';
+    }
+    final subtitleObj = r['subtitle'];
+    String subtitle = '';
+    if (subtitleObj is Map) {
+      subtitle = subtitleObj['text']?.toString() ??
+          _runsText(subtitleObj['runs']) ??
+          '';
+    }
+    String browseId = '';
+    String playlistId = '';
+    final nav = r['navigationEndpoint'];
+    if (nav is Map) {
+      final browse = nav['browseEndpoint'];
+      if (browse is Map) {
+        browseId = browse['browseId']?.toString() ?? '';
+      }
+      final watch = nav['watchEndpoint'];
+      if (watch is Map) {
+        playlistId =
+            watch['playlistId']?.toString() ?? '';
+      }
+    }
+    if (name.isEmpty) return null;
+    if (browseId.isEmpty && playlistId.isEmpty) return null;
+    return YouTubeMusicEntity(
+      kind: kind,
+      name: name,
+      subtitle: subtitle,
+      browseId: browseId,
+      playlistId: playlistId,
+      artworkUrl: _extractThumbnailsUrl(r) ?? '',
+    );
+  }
+
+  static List<String> splitSubtitle(String subtitle) =>
+      subtitle.split('â€¢').map((s) => s.trim()).toList();
+
+  // -- matching (mirror Android exactly) --------------------------------------------
+
+static String normalize(String s) {
+    // Standardize unicode curly quotes, apostrophes, and hyphens/dashes
+    var v = s
+        .replaceAll(RegExp(r"[\u2018\u2019\u201A\u201B`]"), "'")
+        .replaceAll(RegExp(r"[\u201C\u201D\u201E\u201F]"), '"')
+        .replaceAll(RegExp(r"[\u2013\u2014\u2212]"), '-');
+
+    // NFD first (like Android Normalizer.Form.NFD), so precomposed
+    // characters decompose and diacritics can be stripped.
+    v = unorm.nfd(v.toLowerCase());
+    v = v.replaceAll(_diacritics, '');
+    // Currency symbol '$' in artist/track names is universally stylized 's'
+    // (e.g. KR$NA -> krsna, Ke$ha -> kesha, A$AP -> asap, Ty Dolla $ign -> ty dolla sign).
+    v = v.replaceAll(RegExp(r'\$(?=\d)'), '');
+    v = v.replaceAll(r'$', 's');
+    v = v.replaceAll(_nonWord, ' ');
+    v = v.trim().replaceAll(_multiSpace, ' ');
+    return v;
+  }
+
+  static Set<String> _tokens(String value) => normalize(value)
+      .split(' ')
+      .where((t) => t.isNotEmpty && !_matchNoiseWords.contains(t))
+      .toSet();
+
+  static String baseTitle(String value) => value
+      .replaceAll(_featuringClause, ' ')
+      .replaceAll(_versionClause, ' ');
+
+  /// Token-Dice similarity with substring fast-path (0–100).
+  static int similarity(String a, String b) {
+    final normA = normalize(a);
+    final normB = normalize(b);
+    if (normA == normB) return 100;
+    if (normA.isEmpty || normB.isEmpty) return 0;
+    if (normA.contains(normB) || normB.contains(normA)) {
+      final shorter = min(normA.length, normB.length);
+      final longer = max(normA.length, normB.length);
+      final ratio = (shorter * 100) ~/ longer;
+      // Short titles ("Cider" in "Cinderella", "Piranha" in
+      // "Wisakda Me (Piranha, Pt. 2)") must not count as the same song.
+      if (shorter >= 8 && ratio >= 70) return max(85, ratio);
+    }
+    final left = _tokens(a);
+    final right = _tokens(b);
+    if (left.isEmpty || right.isEmpty) return 0;
+    final common = left.intersection(right).length;
+    final dice = (200 * common) ~/ (left.length + right.length);
+    // Android-parity safe subset: a pure token subset only counts when
+    // every extra word is version/noise filler or a number. The old
+    // desktop gate returned 80 for ANY subset ≥2 tokens, so
+    // "Don't Let Me Down" scored 80 against a remix stuffing the same
+    // base words plus remixer names.
+    var subset = 0;
+    final shorterCount = min(left.length, right.length);
+    if (common == shorterCount && common > 0) {
+      final extra = left.union(right).difference(left.intersection(right));
+      if (extra.every((w) =>
+          _variantWords.contains(w) ||
+          _matchNoiseWords.contains(w) ||
+          _isDigits(w))) {
+        subset = 80;
+      }
+    }
+    return max(dice, subset);
+  }
+
+  static bool _isDigits(String w) =>
+      w.isNotEmpty && w.codeUnits.every((c) => c >= 48 && c <= 57);
+
+  /// Android-parity title gate (TextMatch.isSafeTitleMatch): exact,
+  /// base-title-exact (feat/version noise stripped), safe-subset, else
+  /// similarity ≥ 65. Rejects different songs that share a word or two
+  /// while letting feat/version noise through to the scorer.
+  static bool isSafeTitleMatch(
+      String candidateTitle, String wantedTitle, String artist) {
+    final normWanted = normalize(wantedTitle);
+    final normCandidate = normalize(candidateTitle);
+    if (normWanted == normCandidate) return true;
+    if (normWanted.isEmpty || normCandidate.isEmpty) return false;
+
+    var cleanCandidate = normCandidate;
+    if (artist.trim().isNotEmpty) {
+      final normArtist = normalize(artist);
+      if (normArtist.isNotEmpty &&
+          cleanCandidate.startsWith(normArtist)) {
+        cleanCandidate = cleanCandidate
+            .substring(normArtist.length)
+            .trim()
+            .replaceAll(RegExp(r'^-'), '')
+            .trim();
+      }
+    }
+    if (cleanCandidate == normWanted) return true;
+
+    final baseWanted = normalize(baseTitle(wantedTitle));
+    final baseCandidate = normalize(baseTitle(cleanCandidate));
+    if (baseWanted.isNotEmpty && baseWanted == baseCandidate) return true;
+
+    final wantedTokens = _tokens(wantedTitle);
+    final candidateTokens = _tokens(cleanCandidate);
+    if (wantedTokens.isEmpty || candidateTokens.isEmpty) return false;
+
+    final common = wantedTokens.intersection(candidateTokens);
+    if (common.length == wantedTokens.length ||
+        common.length == candidateTokens.length) {
+      final extra = wantedTokens
+          .union(candidateTokens)
+          .difference(common);
+      final artistTokens =
+          artist.trim().isNotEmpty ? _tokens(artist) : <String>{};
+      final allowed = _variantWords
+          .union(_matchNoiseWords)
+          .union(artistTokens);
+      if (extra.every((w) => allowed.contains(w) || _isDigits(w))) {
+        return true;
+      }
+    }
+
+    final sim = max(
+      similarity(cleanCandidate, wantedTitle),
+      similarity(baseCandidate, baseWanted),
+    );
+    return sim >= 65;
+  }
+
+  /// Raw feature-credit substring from a title ("daya & konshens" from
+  /// "… (feat. Daya & Konshens)", "jennie" from "Dracula feat JENNIE").
+  /// Mirrors AddonApi._featPart so the YTM scorer ranks feat fidelity
+  /// the same way the lossless tier does.
+  static String _featPart(String title) {
+    final m1 = _featClause.firstMatch(title);
+    if (m1 != null) {
+      var inner = m1.group(0)!;
+      inner = inner.replaceAll(RegExp(r'^[\(\[]\s*'), '');
+      inner = inner.replaceAll(RegExp(r'[\)\]]\s*$'), '');
+      inner = inner.replaceAll(
+          RegExp(r'^(?:feat(?:uring)?|ft|with)\.?\s+',
+              caseSensitive: false),
+          '');
+      return normalize(inner);
+    }
+    final m2 = _trailingFeat.firstMatch(title);
+    if (m2 != null) {
+      var tail = m2.group(0)!;
+      tail = tail.replaceAll(
+          RegExp(r'^\s+(?:feat(?:uring)?|ft)\.?\s+',
+              caseSensitive: false),
+          '');
+      return normalize(tail);
+    }
+    return '';
+  }
+
+  static final RegExp _featClause = RegExp(
+      r'[\(\[]\s*(feat(?:uring)?|ft|with)\.?\s+[^\)\]]*[\)\]]',
+      caseSensitive: false);
+  static final RegExp _trailingFeat = RegExp(
+      r'\s+(?:feat(?:uring)?|ft)\.?\s+.+$',
+      caseSensitive: false);
+
+  /// Feature fidelity adjustment for [matchScore]: when stripping
+  /// equates the base titles, the feat credit decides. A different
+  /// featured artist (Daya vs Daya & Konshens, 1nonly vs JENNIE) is a
+  /// different recording and must rank below the faithful pick.
+  static int _featBonus(String candidateTitle, String wantedTitle) {
+    final c = _featPart(candidateTitle);
+    final w = _featPart(wantedTitle);
+    if (w.isEmpty && c.isEmpty) return 0;
+    if (w.isNotEmpty && c.isNotEmpty) {
+      if (c == w) return 300;
+      final ct = c.split(' ').toSet();
+      final wt = w.split(' ').toSet();
+      // Partial overlap (extra remixer vocalist): same song family,
+      // but not the requested recording.
+      if (ct.intersection(wt).isNotEmpty) return -100;
+      return -600;
+    }
+    // Wanted the feat version, got the bare base (or vice versa).
+    if (w.isNotEmpty) return -350;
+    return -250;
+  }
+
+  static int matchScore(
+      YouTubeMusicTrack candidate, String title, String artist) {
+    final wantedTitle = normalize(title);
+    final wantedArtist = normalize(artist);
+    final candidateTitle = normalize(candidate.title);
+    final candidateArtist = normalize(candidate.artist);
+    final titleSim = max(
+        similarity(candidate.title, title),
+        similarity(
+            baseTitle(candidate.title), baseTitle(title)));
+    final artistSim = similarity(candidate.artist, artist);
+    var score = titleSim * 5 + artistSim * 3;
+    if (candidateTitle == wantedTitle) score += 600;
+    if (wantedArtist.isNotEmpty &&
+        candidateArtist == wantedArtist) {
+      score += 350;
+    }
+    final wantedVariants = _tokens(title).intersection(_variantWords);
+    final unexpected = _tokens(candidate.title)
+        .intersection(_variantWords)
+        .difference(wantedVariants);
+    score -= unexpected.length * 250;
+    // Feat fidelity: the stripped-exact tie between an original and its
+    // remix/feat-variant breaks toward the requested credit (and an
+    // unexpected extra vocalist ranks as a different recording).
+    score += _featBonus(candidate.title, title);
+    // Android parity: a low artist similarity that isn't even a
+    // substring containment is a different act; a weak title is noise.
+    if (wantedArtist.isNotEmpty) {
+      final artistContains = candidateArtist.contains(wantedArtist) ||
+          wantedArtist.contains(candidateArtist);
+      final titleContainsArtist = candidateTitle.contains(wantedArtist);
+      if (artistSim < 35 && !artistContains && !titleContainsArtist) {
+        score -= 1000;
+      }
+    }
+    if (titleSim < 50) score -= 1500;
+    return score;
+  }
+
+  static String highResolutionArtwork(String url) {
+    var u = url.startsWith('//') ? 'https:$url' : url;
+    if ((u.contains('googleusercontent.com') ||
+            u.contains('ggpht.com')) &&
+        u.contains('=')) {
+      u = '${u.substring(0, u.lastIndexOf('='))}=w512-h512-l90-rj';
+    }
+    return u;
+  }
+
+  static int? parseDuration(String value) {
+    var cleaned = value.trim();
+    if (cleaned.isEmpty) return null;
+    cleaned = cleaned.replaceAll(
+        RegExp(r'[\u200e\u200f\u202a-\u202e\u2066-\u2069]'), '');
+    cleaned = cleaned.replaceAll('：', ':').trim();
+    final match = RegExp(r'(\d{1,2}:)+\d{2}').firstMatch(cleaned);
+    final token = match?.group(0) ?? cleaned;
+    final parts = token.split(':').map(int.tryParse).toList();
+    if (parts.isEmpty || parts.any((e) => e == null)) return null;
+    final nums = parts.whereType<int>().toList();
+    if (nums.length < 2 || nums.length > 3) return null;
+    var total = 0;
+    for (final n in nums) {
+      total = total * 60 + n;
+    }
+    if (total <= 0 || total > 24 * 3600) return null;
+    return total;
+  }
+
+  static bool _isUsefulDetail(String value) {
+    final v = value.trim();
+    return v.isNotEmpty && !{'â€¢', 'Â·', 'Song', 'Video'}.contains(v);
+  }
+
+  static bool _isLikelyArtistDetail(String value) {
+    final v = value.trim();
+    if (!_isUsefulDetail(v)) return false;
+    final lower = v.toLowerCase();
+    if (lower == 'album' ||
+        lower == 'single' ||
+        lower == 'ep' ||
+        lower == 'playlist') {
+      return false;
+    }
+    if (parseDuration(v) != null) return false;
+    if (RegExp(r'^(19|20)\d{2}$').hasMatch(v)) return false;
+    if (lower.contains(' view') || lower.contains(' song')) {
+      return false;
+    }
+    return true;
+  }
+
+  /// Android-parity pass gates for one search candidate: the title must
+  /// survive [isSafeTitleMatch] and the artist must be compatible
+  /// (similarity ≥ 30 or a containment either way, so "The Chainsmokers"
+  /// still matches "Chainsmokers" billing and collab billing still
+  /// matches its primary). Blank artist skips the artist gate.
+  static bool _passesGates(
+      YouTubeMusicTrack c, String title, String cleanArtist) {
+    if (!isSafeTitleMatch(c.title, title, cleanArtist)) return false;
+    if (cleanArtist.trim().isEmpty) return true;
+    final normC = normalize(c.artist);
+    final normW = normalize(cleanArtist);
+    return similarity(c.artist, cleanArtist) >= 30 ||
+        (normW.isNotEmpty &&
+            (normC.contains(normW) || normW.contains(normC))) ||
+        normalize(c.title).contains(normW);
+  }
+
+  /// Rejects stale v1 rows: a cached remix/live/cover for a request
+  /// that names no such variant, or a cached title whose feat credit
+  /// conflicts with the request, forces a fresh search instead of
+  /// replaying the wrong videoId forever.
+  static bool _cachedRowStillFaithful(
+      YouTubeMusicTrack cached, String title, String cleanArtist) {
+    if (!_passesGates(cached, title, cleanArtist)) return false;
+    final wantedVariants = _tokens(title).intersection(_variantWords);
+    if (wantedVariants.isEmpty &&
+        _tokens(cached.title).intersection(_variantWords).isNotEmpty) {
+      return false;
+    }
+    if (_featBonus(cached.title, title) <= -600) return false;
+    return true;
+  }
+
+  /// Best match (throws [NoReliableMatchException] like Android's
+  /// IOException when nothing is reliable).
+  ///
+  /// Cache keys are versioned (`v2|…`): the v1 scorer equated remixes
+  /// with originals through stripped titles, so poisoned disk rows (e.g.
+  /// a remix videoId stored for an original) must never be served again.
+  Future<YouTubeMusicTrack> findBestMatch(
+    String title,
+    String artist, {
+    bool prefetchStreams = false,
+    Set<String> excludedVideoIds = const {},
+  }) async {
+    final cleanArtist = artist.trim().isEmpty ||
+            artist.trim().toLowerCase() == 'unknown artist'
+        ? ''
+        : artist;
+    final cacheKey = 'v2|${normalize(cleanArtist)}|${normalize(title)}';
+    final cached = _matchCache[cacheKey];
+    if (cached != null &&
+        !excludedVideoIds.contains(cached.videoId) &&
+        cached.durationSeconds > 0) {
+      // v2 re-validates rows written by the old scorer: a cached remix
+      // for a non-remix request is dropped and re-resolved below.
+      if (_cachedRowStillFaithful(cached, title, cleanArtist)) {
+        return cached;
+      }
+      _matchCache.remove(cacheKey);
+      try {
+        _disk?.deleteMatchesForVideo(cached.videoId);
+      } catch (_) {}
+    }
+    // Persistent match cache: instant reuse across restarts.
+    if (excludedVideoIds.isEmpty) {
+      try {
+        final disk = _disk?.loadMatchEntry(cacheKey);
+        if (disk != null) {
+          final dv = disk['video_id']?.toString() ?? '';
+          if (dv.isNotEmpty) {
+            final duration = (disk['duration_seconds'] as num?)?.toInt() ?? 0;
+            final track = YouTubeMusicTrack(
+              videoId: dv,
+              title: disk['title']?.toString() ?? title,
+              artist: disk['artist']?.toString() ?? artist,
+              album: disk['album']?.toString() ?? '',
+              artworkUrl:
+                  disk['artwork_url']?.toString() ?? '',
+              durationSeconds: duration,
+            );
+            if (duration > 0 &&
+                _cachedRowStillFaithful(track, title, cleanArtist)) {
+              _matchCache[cacheKey] = track;
+              return track;
+            } else if (duration > 0) {
+              try {
+                _disk?.deleteMatchesForVideo(dv);
+              } catch (_) {}
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    final results = await searchSongs('$title $artist',
+        limit: 30, prefetchStreams: false);
+    final pool = results
+        .where((c) =>
+            c.videoId.isNotEmpty &&
+            !excludedVideoIds.contains(c.videoId))
+        .toList();
+    YouTubeMusicTrack? best;
+    // When the request names no variant (no "remix"/"live"/…), a
+    // same-words remix must never outrank the faithful pick: rank
+    // variant-free candidates first and only fall back to the variant
+    // pool when nothing faithful passes the gates.
+    final wantedVariants = _tokens(title).intersection(_variantWords);
+    List<YouTubeMusicTrack> preferred = pool;
+    if (wantedVariants.isEmpty) {
+      final faithful = pool
+          .where((c) =>
+              _tokens(c.title).intersection(_variantWords).isEmpty)
+          .toList();
+      if (faithful.any((c) => _passesGates(c, title, cleanArtist))) {
+        preferred = faithful;
+      }
+    }
+    var bestScore = -1 << 30;
+    for (final c in preferred) {
+      if (!_passesGates(c, title, cleanArtist)) continue;
+      final score = matchScore(c, title, cleanArtist);
+      if (score > bestScore) {
+        bestScore = score;
+        best = c;
+      }
+    }
+    if (best == null) {
+      throw NoReliableMatchException(
+          'No reliable YouTube Music match found for $title by $artist');
+    }
+    if (_matchCache.length > _maxMatchCacheEntries) {
+      _matchCache.clear();
+    }
+    _matchCache[cacheKey] = best;
+    // Persist for instant reuse (disk cache).
+    try {
+      _disk?.saveMatchEntry(
+        key: cacheKey,
+        videoId: best.videoId,
+        title: best.title,
+        artist: best.artist,
+        album: best.album,
+        artworkUrl: best.artworkUrl,
+        durationSeconds: best.durationSeconds,
+      );
+    } catch (_) {}
+    return best;
+  }
+
+  Future<YouTubeMusicTrack?> findBestMatchOrNull(
+    String title,
+    String artist, {
+    bool prefetchStreams = false,
+    Set<String> excludedVideoIds = const {},
+  }) async {
+    try {
+      return await findBestMatch(title, artist,
+          prefetchStreams: prefetchStreams,
+          excludedVideoIds: excludedVideoIds);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// First billed artist for match fallback: Last.fm bills collabs as
+  /// "A; B; C" while YouTube lists the primary ("A"), so the strict
+  /// artist gate (≥50) rejects every candidate and playback dies on
+  /// songs that plainly exist. Returns '' for junk billing.
+  static String primaryArtistForMatch(String artist) {
+    var s = artist.split(';').first.trim();
+    if (s.isEmpty) return '';
+    s = s
+        .split(RegExp(
+          r'\s+[(\[]?(?:feat\.?|ft\.?|featuring)\b',
+          caseSensitive: false,
+        ))
+        .first
+        .trim();
+    if (s.isEmpty) return '';
+    // "Tyler, The Creator" stays intact (comma + the/and, no ampersand).
+    if (RegExp(r',\s*(the|and)\b', caseSensitive: false).hasMatch(s) &&
+        !s.contains(' & ')) {
+      return s;
+    }
+    final lower = s.toLowerCase();
+    if (lower == 'unknown artist' ||
+        lower == 'various artists' ||
+        lower == 'unknown') {
+      return '';
+    }
+    return s.split(RegExp(r'\s*[,&]\s*')).first.trim();
+  }
+
+  /// Best-effort YTM match for PLAYBACK (a close song beats silence).
+  ///
+  /// Tier 0 is the strict match (cached, instant on repeats). Tier 1
+  /// retries with the primary artist for collab/featured billing
+  /// ("IKKA; Dino James; Badshah" → "IKKA"). Tier 2 drops the artist
+  /// entirely — title-strong wins via the exact-title bonus and
+  /// variant penalties already inside [findBestMatch].
+  ///
+  /// Deliberately does NOT poison the match cache: tier 1/2 hits stay
+  /// session-local (queue adoption + stream cache), so cover-art and
+  /// download paths never inherit a loose match as a strict one.
+  Future<YouTubeMusicTrack?> findBestEffortMatchOrNull(
+    String title,
+    String artist, {
+    Set<String> excludedVideoIds = const {},
+  }) async {
+    if (title.trim().isEmpty) {
+      PlayDiag.log('match MISS all-tiers (empty title) artist="$artist"');
+      return null;
+    }
+    try {
+      final strict = await findBestMatch(title, artist,
+              excludedVideoIds: excludedVideoIds)
+          .timeout(const Duration(seconds: 5));
+      PlayDiag.log('match HIT strict "$title" — "${strict.title}" '
+          '[${strict.videoId}] by "${strict.artist}"');
+      return strict;
+    } catch (e) {
+      PlayDiag.log('match miss strict "$title" — "$artist" ($e)');
+    }
+    final primary = primaryArtistForMatch(artist);
+    if (primary.isNotEmpty &&
+        normalize(primary) != normalize(artist)) {
+      try {
+        final m = await findBestMatch(title, primary,
+                excludedVideoIds: excludedVideoIds)
+            .timeout(const Duration(seconds: 5));
+        PlayDiag.log('match HIT primary "$title" — "${m.title}" '
+            '[${m.videoId}] (as "$primary")');
+        return m;
+      } catch (e) {
+        PlayDiag.log(
+            'match miss primary "$title" — "$primary" ($e)');
+      }
+    }
+    try {
+      final m = await findBestMatch(title, '',
+              excludedVideoIds: excludedVideoIds)
+          .timeout(const Duration(seconds: 5));
+      PlayDiag.log('match HIT title-only "$title" — "${m.title}" '
+          '[${m.videoId}] by "${m.artist}"');
+      return m;
+    } catch (e) {
+      PlayDiag.log('match MISS title-only "$title" ($e)');
+    }
+    return null;
+  }
+
+  void rememberMatch(YouTubeMusicTrack track,
+      {String? title, String? artist}) {
+    if (track.videoId.isEmpty) return;
+    final cacheKey =
+        'v2|${normalize(artist ?? track.artist)}|${normalize(title ?? track.title)}';
+    _matchCache[cacheKey] = track;
+    try {
+      _disk?.saveMatchEntry(
+        key: cacheKey,
+        videoId: track.videoId,
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        artworkUrl: track.artworkUrl,
+        durationSeconds: track.durationSeconds,
+      );
+    } catch (_) {}
+  }
+
+  Future<bool> isPlayable(String title, String artist) async =>
+      await findBestMatchOrNull(title, artist) != null;
+
+  void invalidateCache(String videoId) {
+    _streamCache.removeWhere((k, _) => k.startsWith('$videoId|'));
+    _matchCache.removeWhere((_, v) => v.videoId == videoId);
+    _inflight.removeWhere((k, _) => k.startsWith('$videoId|'));
+    try {
+      _disk?.deleteStreamEntries(videoId);
+      _disk?.deleteMatchesForVideo(videoId);
+    } catch (_) {}
+  }
+
+  // -- stream resolution (Limusic fast path) -------------------------------
+  //
+  // - Reuse cached URLs until expiry or a real 403 (no blocking probes).
+  // - Single-flight dedup via _inflight.
+  // - Only the next queue track is pre-resolved (prefetchNextTrack).
+
+  void prefetchStream(String videoId) {
+    prefetchNextTrack(videoId);
+  }
+
+  /// Background pre-resolve for exactly one videoId (the next likely
+  /// queue track). Deduped via the same single-flight map as playback,
+  /// never blocks playback, never fans out.
+  void prefetchNextTrack(String videoId) {
+    if (videoId.isEmpty) return;
+    final authScope = _playbackAuthScope();
+    if (peekCachedStream(videoId) != null) return;
+    final requestKey = '$videoId|$authScope';
+    if (_inflight.containsKey(requestKey)) return;
+    unawaited(resolveAudioStream(videoId).then(
+      (_) {},
+      onError: (_) {},
+    ));
+  }
+
+  /// Non-network freshness peek used for instant playback decisions.
+  ResolvedStream? peekCachedStream(String videoId) {
+    if (videoId.isEmpty) return null;
+    final authScope = _playbackAuthScope();
+    final now = DateTime.now();
+    _CachedStream? freshest;
+    for (final e in _streamCache.values) {
+      if (e.stream.url.isEmpty) continue;
+      // Key prefix check via cacheKey (youtube:videoId:...).
+      if (!e.stream.cacheKey.contains(videoId)) continue;
+      if (e.authScope != authScope) continue;
+      if (!_isFresh(e, now)) continue;
+      if (freshest == null ||
+          e.cachedAt.isAfter(freshest.cachedAt)) {
+        freshest = e;
+      }
+    }
+    return freshest?.stream;
+  }
+
+  Future<ResolvedStream?> resolveAudioStream(
+      String videoId,
+      {bool forceRefresh = false}) async {
+    if (videoId.isEmpty) return null;
+    final authScope = _playbackAuthScope();
+    final now = DateTime.now();
+    if (!forceRefresh) {
+      final peek = peekCachedStream(videoId);
+      if (peek != null) {
+        // cacheKey: youtube:videoId:clientKey:itag:scope:expiryMs.
+        // Surface them so a cache-hit line is as diagnosable as a
+        // fresh `resolved` line (previously client='' itag=-1).
+        var hitClient = '';
+        var hitItag = -1;
+        try {
+          final parts = peek.cacheKey.split(':');
+          if (parts.length >= 5 && parts[0] == 'youtube') {
+            hitClient = parts[2];
+            hitItag = int.tryParse(parts[3]) ?? -1;
+          }
+        } catch (_) {}
+        _logStream('cache-hit',
+            videoId: videoId,
+            client: hitClient,
+            itag: hitItag,
+            mime: peek.mimeType,
+            expiry: _expiryState(peek.expiresAt));
+        return peek;
+      }
+      // Drop only truly expired entries; keep the rest for fallback.
+      _streamCache.removeWhere((_, c) =>
+          c.stream.cacheKey.contains(videoId) &&
+          !_isFresh(c, now));
+    } else {
+      _streamCache.removeWhere((k, _) => k.startsWith('$videoId|'));
+    }
+    final requestKey = '$videoId|$authScope';
+    if (_inflight.containsKey(requestKey)) {
+      return _inflight[requestKey];
+    }
+    final future = _resolveAudioStreamInternal(videoId, authScope);
+    _inflight[requestKey] = future;
+    try {
+      return await future;
+    } finally {
+      _inflight.remove(requestKey);
+    }
+  }
+
+  Future<ResolvedStream?> _resolveAudioStreamInternal(
+      String videoId, String authScope) async {
+    // Limusic fast path: direct-URL clients (VISIONOS, ANDROID_VR…)
+    // need neither the signature decipher nor poTokens. Both are
+    // created LAZILY inside ensureAux() — only when a ciphered
+    // fallback (WEB_REMIX/EMBEDDED/MWEB) is actually reached — so the
+    // common case opens zero WebViews and mints zero tokens.
+    try {
+      await _ensureConfig().timeout(const Duration(seconds: 4));
+    } catch (_) {}
+    PlayerScript? script;
+    int? sts;
+    String? playerPoToken;
+    String? gvsPoToken;
+    var auxReady = false;
+    Future<void> ensureAux() async {
+      if (auxReady) return;
+      auxReady = true;
+      try {
+        final results = await Future.wait([
+          _decipher
+              .scriptFor(videoId)
+              .timeout(const Duration(seconds: 8))
+              .then<PlayerScript?>((s) => s, onError: (_) => null),
+          _mintPoToken(videoId),
+        ]).timeout(const Duration(seconds: 9));
+        script = results[0] as PlayerScript?;
+        sts = script?.sts;
+        final po = results[1] as String?;
+        playerPoToken = po;
+        gvsPoToken = po;
+      } catch (_) {}
+    }
+
+    final available = _orderedFastClients(videoId);
+    if (available.isEmpty) {
+      _logStream('resolve-failed',
+          videoId: videoId, detail: 'all clients cooling down');
+      return null;
+    }
+
+    for (var i = 0; i < available.length; i++) {
+      final client = available[i];
+      final needsCipher = client.name == 'WEB_REMIX' ||
+          client.name == 'WEB_EMBEDDED_PLAYER' ||
+          client.name == 'MWEB';
+      if (needsCipher) {
+        await ensureAux();
+      }
+      try {
+        final candidate = await _resolveDirectClientStream(
+          videoId: videoId,
+          client: client,
+          visitorData: _visitorData,
+          signatureTimestamp: sts,
+          script: script,
+          playerPoToken: playerPoToken,
+          gvsPoToken:
+              gvsPoToken != null && _visitorData != null ? gvsPoToken : null,
+          authScope: authScope,
+        ).timeout(_fastClientTimeout);
+        if (candidate != null) {
+          _lastSuccessfulClientName = client.name;
+          _cacheResolvedStream(
+              videoId, candidate, client.key, authScope, DateTime.now());
+          _lastResolved[videoId] =
+              _ResolvedRef(client.key, authScope);
+          _logStream('resolved',
+              videoId: videoId,
+              client: client.key,
+              itag: candidate.itag,
+              mime: candidate.stream.mimeType,
+              expiry:
+                  _expiryState(candidate.stream.expiresAt));
+          return candidate.stream;
+        }
+      } catch (e) {
+        _failedClientsUntil[
+                '$videoId|${client.key}|$authScope'] =
+            DateTime.now()
+                .add(Duration(milliseconds: _clientCooldownMs));
+        _logStream('client-resolve-failed',
+            videoId: videoId,
+            client: client.key,
+            detail: e.runtimeType.toString());
+        if (e is ConfirmedUnplayableMediaException) {
+          return null;
+        }
+        continue;
+      }
+    }
+    return null;
+  }
+
+  /// Preferred client first (VISIONOS), then last-successful, then the
+  /// Remaining clients are tried only after earlier clients fail, including
+  /// the browser clients that can use the existing signature and token flow.
+  List<PlayerClient> _orderedFastClients(String videoId) {
+    final order = <PlayerClient>[];
+    void add(String name) {
+      for (final c in playerClients) {
+        if (c.name == name &&
+            !_isCooling(videoId, c.key) &&
+            !order.any((e) => e.key == c.key)) {
+          order.add(c);
+          break;
+        }
+      }
+    }
+
+    add(_fastPreferredClient);
+    if (_lastSuccessfulClientName != null &&
+        _lastSuccessfulClientName != _fastPreferredClient) {
+      add(_lastSuccessfulClientName!);
+    }
+    for (final c in playerClients) {
+      if (!_isCooling(videoId, c.key) &&
+          !order.any((e) => e.key == c.key)) {
+        order.add(c);
+      }
+    }
+    return order;
+  }
+
+  /// Stub: WebView/BotGuard poToken minting was removed. Always null —
+  /// callers fail-open to direct-URL clients.
+  Future<String?> _mintPoToken(String videoId) async => null;
+
+  Future<_Candidate?> _resolveDirectClientStream({
+    required String videoId,
+    required PlayerClient client,
+    required String? visitorData,
+    required int? signatureTimestamp,
+    required PlayerScript? script,
+    required String? playerPoToken,
+    required String? gvsPoToken,
+    required String authScope,
+  }) async {
+    final body = {
+      'context': _context(
+        client.name,
+        client.version,
+        visitorData: visitorData,
+        osName: client.osName,
+        osVersion: client.osVersion,
+        deviceMake: client.deviceMake,
+        deviceModel: client.deviceModel,
+        androidSdkVersion: client.androidSdkVersion,
+        poToken: playerPoToken,
+      ),
+      'videoId': videoId,
+      'contentCheckOk': true,
+      'racyCheckOk': true,
+      if (signatureTimestamp != null)
+        'playbackContext': {
+          'contentPlaybackContext': {
+            'signatureTimestamp': signatureTimestamp,
+          },
+        },
+    };
+    final playerApi =
+        client.name == 'WEB_REMIX' ? musicApi : youtubeApi;
+    final root = await _post(
+      '$playerApi/player?key=${client.apiKey}&prettyPrint=false',
+      body: body,
+      clientName: client.name,
+      clientVersion: client.version,
+      userAgent: client.userAgent,
+      authenticated:
+          client.name == 'WEB_REMIX' && _connection.connected,
+      origin: client.origin,
+      referer: client.referer,
+      visitorData: visitorData,
+      maxAttempts: _maxPlayerRequestAttempts,
+    );
+    final status = root['playabilityStatus'] as Map?;
+    final state = status?['status']?.toString();
+    if (state != 'OK') {
+      final reason = status?['reason']?.toString() ?? '';
+      if (state == 'UNPLAYABLE' &&
+          _isConfirmedUnavailable(reason)) {
+        throw ConfirmedUnplayableMediaException(
+            reason.isEmpty ? (state ?? '') : reason);
+      }
+      throw Exception(
+          reason.isEmpty ? 'Player status ${state ?? 'missing'}' : reason);
+    }
+    final headers = Map<String, String>.from(
+        client.streamRequestHeaders);
+    if (visitorData != null && visitorData.isNotEmpty) {
+      headers['X-Goog-Visitor-Id'] = visitorData;
+    }
+    if (client.name == 'WEB_REMIX' && _connection.connected) {
+      final cookies = _cookieHeaderValue();
+      if (cookies != null) headers['Cookie'] = cookies;
+      final auth = _authorizationHeaderValue(client.origin);
+      if (auth != null) headers['Authorization'] = auth;
+    }
+    final streaming = root['streamingData'] as Map?;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final responseExpiry = (streaming?['expiresInSeconds'] != null)
+        ? nowMs +
+            max(
+                    1,
+                    int.tryParse(streaming!['expiresInSeconds']
+                            .toString()) ??
+                        0) *
+                1000
+        : null;
+    final formats = <({Map<String, dynamic> format, bool adaptive})>[];
+    final rawFormats = streaming?['formats'];
+    if (rawFormats is List) {
+      for (final f in rawFormats.whereType<Map<String, dynamic>>()) {
+        formats.add((format: f, adaptive: false));
+      }
+    }
+    final adaptive = streaming?['adaptiveFormats'];
+    if (adaptive is List) {
+      for (final f in adaptive.whereType<Map<String, dynamic>>()) {
+        formats.add((format: f, adaptive: true));
+      }
+    }
+    final candidates = <_Candidate>[];
+    for (final entry in formats) {
+      final format = entry.format;
+      String? url = format['url']?.toString();
+      url ??= () {
+        final cipher = format['signatureCipher']?.toString() ??
+            format['cipher']?.toString();
+        if (cipher == null || script == null) return null;
+        return _decipher.decipherUrl(cipher, script);
+      }();
+      if (url == null || url.isEmpty) continue;
+      url = appendPot(url, gvsPoToken);
+      final mime = format['mimeType']?.toString() ?? '';
+      if (!mime.toLowerCase().startsWith('audio/')) continue;
+      final codec = _extractCodec(mime);
+      final bitrate =
+          (format['bitrate'] as num?)?.toInt() ?? 0;
+      if (!_isCompatibleAudio(
+          mime.split(';').first, codec)) {
+        continue;
+      }
+      final urlExpiry = _urlExpiryMs(url);
+      DateTime? expiresAt;
+      final options = [
+        ?urlExpiry,
+        ?responseExpiry,
+      ];
+      if (options.isNotEmpty) {
+        expiresAt = DateTime.fromMillisecondsSinceEpoch(
+            options.reduce(min));
+      } else {
+        expiresAt = DateTime.now()
+            .add(Duration(milliseconds: _unknownExpiryTtlMs));
+      }
+      final codecLabel = (codec?.isNotEmpty ?? false)
+          ? codec!.toUpperCase()
+          : (mime.toLowerCase().contains('opus')
+              ? 'OPUS'
+              : mime.toLowerCase().contains('mp4')
+                  ? 'AAC'
+                  : 'AUDIO');
+      final itag = (format['itag'] as num?)?.toInt() ?? -1;
+      candidates.add(_Candidate(
+        stream: ResolvedStream(
+          url: url,
+          mimeType: mime.split(';').first,
+          bitrateKbps: (bitrate / 1000).round(),
+          audioCodec: codecLabel,
+          cacheKey:
+              'youtube:$videoId:${client.key}:${format['itag']}:$authScope:${expiresAt.millisecondsSinceEpoch}',
+          requestHeaders: headers,
+          expiresAt: expiresAt,
+          watchtimeUrl: _watchtimeUrlOf(root),
+        ),
+        adaptive: entry.adaptive,
+        bitrate: bitrate,
+        itag: itag,
+      ));
+    }
+    candidates.sort((a, b) {
+      final adaptiveOrder =
+          (a.adaptive ? 1 : 0).compareTo(b.adaptive ? 1 : 0);
+      if (adaptiveOrder != 0) return adaptiveOrder;
+      return b.bitrate.compareTo(a.bitrate);
+    });
+    // Limusic behavior: trust the chosen URL until expiry or a real
+    // 403. No blocking Range probes on the playback hot path — mpv
+    // itself is the validity check and reportPlaybackFailure handles
+    // the retry. This removes 1–2 round trips per client.
+    if (candidates.isEmpty) {
+      throw Exception('${client.key} returned no usable audio URL');
+    }
+    return candidates.first;
+  }
+
+  /// Download-optimized resolution (M4A AAC container preferred).
+  Future<ResolvedStream?> resolveDownloadStream(
+      String videoId) async {
+    if (videoId.isEmpty) return null;
+    PlayerScript? script;
+    int? sts;
+    try {
+      script = await _decipher
+          .scriptFor(videoId)
+          .timeout(const Duration(seconds: 30));
+      sts = script?.sts;
+    } catch (_) {}
+    await _ensureConfig();
+    final collected = <_Candidate>[];
+    for (final client in playerClients) {
+      try {
+        final root = await _post(
+          '${client.name == 'WEB_REMIX' ? musicApi : youtubeApi}/player?key=${client.apiKey}&prettyPrint=false',
+          body: {
+            'context': _context(
+              client.name,
+              client.version,
+              visitorData: _visitorData,
+              osName: client.osName,
+              osVersion: client.osVersion,
+              deviceMake: client.deviceMake,
+              deviceModel: client.deviceModel,
+              androidSdkVersion: client.androidSdkVersion,
+            ),
+            'videoId': videoId,
+            'contentCheckOk': true,
+            'racyCheckOk': true,
+            if (sts != null)
+              'playbackContext': {
+                'contentPlaybackContext': {
+                  'signatureTimestamp': sts,
+                },
+              },
+          },
+          clientName: client.name,
+          clientVersion: client.version,
+          userAgent: client.userAgent,
+          maxAttempts: 1,
+        );
+        final status =
+            (root['playabilityStatus'] as Map?)?['status']
+                ?.toString();
+        if (status != 'OK') continue;
+        final streaming = root['streamingData'] as Map?;
+        final lists = [
+          streaming?['formats'],
+          streaming?['adaptiveFormats']
+        ];
+        for (final list in lists) {
+          if (list is! List) continue;
+          for (final f in list.whereType<Map<String, dynamic>>()) {
+            String? url = f['url']?.toString();
+            url ??= () {
+              final cipher =
+                  f['signatureCipher']?.toString() ??
+                      f['cipher']?.toString();
+              if (cipher == null || script == null) {
+                return null;
+              }
+              return _decipher.decipherUrl(cipher, script);
+            }();
+            if (url == null) continue;
+            final mime = f['mimeType']?.toString() ?? '';
+            if (!mime.toLowerCase().startsWith('audio/')) {
+              continue;
+            }
+            final bitrate =
+                (f['bitrate'] as num?)?.toInt() ?? 0;
+            collected.add(_Candidate(
+              stream: ResolvedStream(
+                url: url,
+                mimeType: mime.split(';').first,
+                bitrateKbps: (bitrate / 1000).round(),
+                audioCodec: 'AUDIO',
+                cacheKey: 'yt-dl:$videoId:${f['itag']}',
+                requestHeaders: client.streamRequestHeaders,
+                expiresAt: _urlExpiryMs(url) != null
+                    ? DateTime.fromMillisecondsSinceEpoch(
+                        _urlExpiryMs(url)!)
+                    : DateTime.now()
+                        .add(Duration(milliseconds: _unknownExpiryTtlMs)),
+                watchtimeUrl: _watchtimeUrlOf(root),
+              ),
+              adaptive: true,
+              bitrate: bitrate,
+              itag: (f['itag'] as num?)?.toInt() ?? -1,
+            ));
+          }
+        }
+      } catch (_) {}
+      if (collected.length >= 12) break;
+    }
+    _Candidate? best;
+    final m4a = collected.where((c) =>
+        c.stream.mimeType.toLowerCase().contains('mp4') ||
+        c.stream.mimeType.toLowerCase().contains('m4a'));
+    if (m4a.isNotEmpty) {
+      best = m4a.reduce((a, b) =>
+          a.bitrate >= b.bitrate ? a : b);
+    } else if (collected.isNotEmpty) {
+      best =
+          collected.reduce((a, b) => a.bitrate >= b.bitrate ? a : b);
+    }
+    if (best == null) {
+      return resolveAudioStream(videoId);
+    }
+    if (await _probeStream(best.stream, 'download-probe',
+        adaptive: true)) {
+      return best.stream;
+    }
+    return resolveAudioStream(videoId);
+  }
+
+  /// Download-optimized Opus resolution (Opus/WebM preferred).
+  ///
+  /// Mirrors [resolveDownloadStream] but picks the richest Opus/WebM
+  /// adaptive stream — YouTube's best lossy codec — instead of M4A/AAC,
+  /// so offline files keep full quality. Falls back to
+  /// [resolveAudioStream] when nothing usable is found or probed.
+  Future<ResolvedStream?> resolveOpusDownloadStream(
+      String videoId) async {
+    if (videoId.isEmpty) return null;
+    PlayerScript? script;
+    int? sts;
+    try {
+      script = await _decipher
+          .scriptFor(videoId)
+          .timeout(const Duration(seconds: 30));
+      sts = script?.sts;
+    } catch (_) {}
+    await _ensureConfig();
+    final collected = <_Candidate>[];
+    for (final client in playerClients) {
+      try {
+        final root = await _post(
+          '${client.name == 'WEB_REMIX' ? musicApi : youtubeApi}/player?key=${client.apiKey}&prettyPrint=false',
+          body: {
+            'context': _context(
+              client.name,
+              client.version,
+              visitorData: _visitorData,
+              osName: client.osName,
+              osVersion: client.osVersion,
+              deviceMake: client.deviceMake,
+              deviceModel: client.deviceModel,
+              androidSdkVersion: client.androidSdkVersion,
+            ),
+            'videoId': videoId,
+            'contentCheckOk': true,
+            'racyCheckOk': true,
+            if (sts != null)
+              'playbackContext': {
+                'contentPlaybackContext': {
+                  'signatureTimestamp': sts,
+                },
+              },
+          },
+          clientName: client.name,
+          clientVersion: client.version,
+          userAgent: client.userAgent,
+          maxAttempts: 1,
+        );
+        final status =
+            (root['playabilityStatus'] as Map?)?['status']
+                ?.toString();
+        if (status != 'OK') continue;
+        final streaming = root['streamingData'] as Map?;
+        final lists = [
+          streaming?['formats'],
+          streaming?['adaptiveFormats']
+        ];
+        for (final list in lists) {
+          if (list is! List) continue;
+          for (final f in list.whereType<Map<String, dynamic>>()) {
+            String? url = f['url']?.toString();
+            url ??= () {
+              final cipher =
+                  f['signatureCipher']?.toString() ??
+                      f['cipher']?.toString();
+              if (cipher == null || script == null) {
+                return null;
+              }
+              return _decipher.decipherUrl(cipher, script);
+            }();
+            if (url == null) continue;
+            final mime = f['mimeType']?.toString() ?? '';
+            if (!mime.toLowerCase().startsWith('audio/')) {
+              continue;
+            }
+            final codec = _extractCodec(mime);
+            final bitrate =
+                (f['bitrate'] as num?)?.toInt() ?? 0;
+            collected.add(_Candidate(
+              stream: ResolvedStream(
+                url: url,
+                mimeType: mime.split(';').first,
+                bitrateKbps: (bitrate / 1000).round(),
+                audioCodec: (codec?.isNotEmpty ?? false)
+                    ? codec!.toUpperCase()
+                    : 'AUDIO',
+                cacheKey: 'yt-opus-dl:$videoId:${f['itag']}',
+                requestHeaders: client.streamRequestHeaders,
+                expiresAt: _urlExpiryMs(url) != null
+                    ? DateTime.fromMillisecondsSinceEpoch(
+                        _urlExpiryMs(url)!)
+                    : DateTime.now()
+                        .add(Duration(milliseconds: _unknownExpiryTtlMs)),
+                watchtimeUrl: _watchtimeUrlOf(root),
+              ),
+              adaptive: true,
+              bitrate: bitrate,
+              itag: (f['itag'] as num?)?.toInt() ?? -1,
+            ));
+          }
+        }
+      } catch (_) {}
+      if (collected.length >= 12) break;
+    }
+    bool isOpus(_Candidate c) =>
+        c.stream.audioCodec.toUpperCase().contains('OPUS') ||
+        c.stream.mimeType.toLowerCase().contains('opus');
+    bool isWebm(_Candidate c) =>
+        c.stream.mimeType.toLowerCase().contains('webm');
+    _Candidate? best;
+    final opus = collected.where(isOpus);
+    if (opus.isNotEmpty) {
+      best = opus.reduce(
+          (a, b) => a.bitrate >= b.bitrate ? a : b);
+    } else {
+      final webm = collected.where(isWebm);
+      if (webm.isNotEmpty) {
+        best = webm.reduce(
+            (a, b) => a.bitrate >= b.bitrate ? a : b);
+      } else if (collected.isNotEmpty) {
+        best = collected.reduce(
+            (a, b) => a.bitrate >= b.bitrate ? a : b);
+      }
+    }
+    if (best == null) {
+      return resolveAudioStream(videoId);
+    }
+    if (await _probeStream(best.stream, 'opus-download-probe',
+        adaptive: true)) {
+      return best.stream;
+    }
+    return resolveAudioStream(videoId);
+  }
+
+  bool _isCooling(String videoId, String clientKey) {
+    final prefix = '$videoId|$clientKey|';
+    final now = DateTime.now();
+    var cooling = false;
+    final expired = <String>[];
+    _failedClientsUntil.forEach((key, until) {
+      if (!key.startsWith(prefix)) return;
+      if (now.isBefore(until)) {
+        cooling = true;
+      } else {
+        expired.add(key);
+      }
+    });
+    for (final key in expired) {
+      _failedClientsUntil.remove(key);
+    }
+    return cooling;
+  }
+
+  void _coolClient(String videoId, String clientKey) {
+    _failedClientsUntil['$videoId|$clientKey|${_playbackAuthScope()}'] =
+        DateTime.now().add(Duration(milliseconds: _clientCooldownMs));
+  }
+
+  void reportPlaybackFailure(String videoId) {
+    _streamCache.removeWhere((k, _) => k.startsWith('$videoId|'));
+    try {
+      _disk?.deleteStreamEntries(videoId);
+    } catch (_) {}
+    final ref = _lastResolved.remove(videoId);
+    if (ref != null) {
+      _failedClientsUntil[
+              '$videoId|${ref.clientProfile}|${ref.authScope}'] =
+          DateTime.now().add(Duration(milliseconds: _clientCooldownMs));
+      _logStream('report-failure',
+          videoId: videoId, client: ref.clientProfile);
+    } else {
+      for (final c in playerClients.take(_maxStreamClients)) {
+        _coolClient(videoId, c.key);
+      }
+      _logStream('report-failure', videoId: videoId);
+    }
+  }
+
+  void _cacheResolvedStream(String videoId, _Candidate candidate,
+      String clientProfile, String authScope, DateTime now) {
+    _streamCache[
+            '$videoId|$clientProfile|${candidate.itag}|$authScope|${candidate.stream.expiresAt?.millisecondsSinceEpoch ?? 0}'] =
+        _CachedStream(candidate.stream, clientProfile,
+            candidate.itag, candidate.adaptive, authScope, now);
+    if (_streamCache.length > _maxStreamCacheEntries) {
+      final sorted = _streamCache.entries.toList()
+        ..sort((a, b) =>
+            a.value.cachedAt.compareTo(b.value.cachedAt));
+      for (final e in sorted.take(
+          _streamCache.length - _maxStreamCacheEntries)) {
+        _streamCache.remove(e.key);
+      }
+    }
+    // Persistent disk copy for instant reuse across restarts.
+    try {
+      _disk?.saveStreamEntry(
+        videoId: videoId,
+        clientProfile: clientProfile,
+        itag: candidate.itag,
+        url: candidate.stream.url,
+        headersJson: jsonEncode(candidate.stream.requestHeaders),
+        mime: candidate.stream.mimeType,
+        bitrateKbps: candidate.stream.bitrateKbps,
+        codec: candidate.stream.audioCodec,
+        expiresAtMs:
+            candidate.stream.expiresAt?.millisecondsSinceEpoch ?? 0,
+        cachedAtMs: now.millisecondsSinceEpoch,
+        authScope: authScope,
+        watchtimeUrl: candidate.stream.watchtimeUrl,
+      );
+    } catch (_) {}
+  }
+
+  static bool _isFresh(_CachedStream c, DateTime now) {
+    if (now.difference(c.cachedAt).inMilliseconds >=
+        _streamTtlMs) {
+      return false;
+    }
+    final exp = c.stream.expiresAt;
+    return exp == null ||
+        exp.difference(now).inMilliseconds > _urlExpiryMarginMs;
+  }
+
+  static String _expiryState(DateTime? exp) {
+    if (exp == null) return 'unknown';
+    return exp.isBefore(DateTime.now()) ? 'expired' : 'fresh';
+  }
+
+  /// Kept for download validation only. Playback never probes:
+  /// cached URLs are trusted until expiry or a real 403 from mpv,
+  /// mirroring Limusic (libmpv itself is the validity check).
+  Future<bool> _probeStream(ResolvedStream stream, String stage,
+      {required bool adaptive}) async {
+    if (stream.expiresAt != null &&
+        stream.expiresAt!.difference(DateTime.now()).inMilliseconds <=
+            _urlExpiryMarginMs) {
+      _logStream(stage,
+          mime: stream.mimeType,
+          expiry: 'expired',
+          detail: 'expired=true');
+      return false;
+    }
+    try {
+      final headers = <String, String>{
+        'Accept-Encoding': 'identity',
+      };
+      // Range probes only apply to non-adaptive (progressive)
+      // formats â€” mirror Android.
+      if (!adaptive) headers['Range'] = 'bytes=0-1';
+      headers.addAll(stream.requestHeaders);
+      var status = 0;
+      var contentType = '';
+      var gotByte = false;
+      final client = HttpClient();
+      try {
+        final req = await client.getUrl(Uri.parse(stream.url));
+        headers.forEach(req.headers.set);
+        final res = await req.close().timeout(
+            const Duration(seconds: 10));
+        status = res.statusCode;
+        contentType =
+            res.headers.value('content-type')?.toLowerCase() ?? '';
+        try {
+          await res.first.timeout(
+              const Duration(seconds: 10));
+          gotByte = true;
+        } catch (_) {
+          gotByte = false;
+        }
+      } finally {
+        client.close(force: true);
+      }
+      final validType = !contentType.contains('text/html') &&
+          !contentType.contains('application/json') &&
+          !contentType.contains('text/plain');
+      final valid =
+          (status == 200 || status == 206) && validType && gotByte;
+      _logStream(stage,
+          mime: stream.mimeType,
+          expiry: _expiryState(stream.expiresAt),
+          http: status,
+          detail:
+              'valid=$valid type=${_take40(contentType.split(';').first)}');
+      return valid;
+    } catch (e) {
+      _logStream(stage,
+          mime: stream.mimeType,
+          expiry: _expiryState(stream.expiresAt),
+          detail: 'error=${e.runtimeType}');
+      return false;
+    }
+  }
+
+  static String _take40(String s) =>
+      s.length <= 40 ? s : s.substring(0, 40);
+
+  static bool _isCompatibleAudio(String mime, String? codec) {
+    final m = mime.toLowerCase();
+    final c = (codec ?? '').toLowerCase();
+    if (m == 'audio/webm') {
+      return c.isEmpty || c.contains('opus') || c.contains('vorbis');
+    }
+    if (m == 'audio/mp4' || m == 'audio/m4a') {
+      return c.isEmpty || c.contains('mp4a') || c.contains('aac');
+    }
+    if (m == 'audio/ogg') {
+      return c.isEmpty || c.contains('opus') || c.contains('vorbis');
+    }
+    if (m == 'audio/mpeg') return true;
+    return false;
+  }
+
+  static String? _extractCodec(String mime) {
+    final m = _codecPattern.firstMatch(mime)?.group(1);
+    if (m == null) return null;
+    final first = m.split(',').first.trim();
+    return first.isEmpty ? null : first;
+  }
+
+  static int? _urlExpiryMs(String url) {
+    final exp = Uri.tryParse(url)?.queryParameters['expire'];
+    final secs = exp == null ? null : int.tryParse(exp);
+    return secs == null ? null : secs * 1000;
+  }
+
+  static String appendPot(String url, String? token) {
+    if (token == null || token.isEmpty) return url;
+    final parsed = Uri.tryParse(url);
+    if (parsed == null) return url;
+    if (parsed.queryParameters['pot'] != null) return url;
+    final fragIdx = url.indexOf('#');
+    final base = fragIdx >= 0 ? url.substring(0, fragIdx) : url;
+    final fragment = fragIdx >= 0 ? url.substring(fragIdx) : '';
+    final sep = base.endsWith('?') || base.endsWith('&')
+        ? ''
+        : (base.contains('?') ? '&' : '?');
+    return '$base$sep${Uri.encodeQueryComponent('pot')}=${Uri.encodeQueryComponent(token)}$fragment';
+  }
+
+  static bool _isConfirmedUnavailable(String reason) {
+    final lower = reason.toLowerCase();
+    return _confirmedUnavailableReasons
+        .any((r) => lower.contains(r));
+  }
+
+  // -- JSON parsing (mirror Android renderers) -------------------------------------
+
+  List<YouTubeMusicTrack> _parseSongRenderers(Object? root) {
+    final renderers = <Map<String, dynamic>>[];
+    _collectObjects(
+        root, 'musicResponsiveListItemRenderer', renderers);
+    final songs = renderers.map(_parseSong).whereType<YouTubeMusicTrack>().toList();
+    final queueRenderers = <Map<String, dynamic>>[];
+    _collectObjects(
+        root, 'playlistPanelVideoRenderer', queueRenderers);
+    songs.addAll(queueRenderers
+        .map(_parsePlaylistPanelSong)
+        .whereType<YouTubeMusicTrack>());
+    if (songs.isEmpty) {
+      final ytVideos = <Map<String, dynamic>>[];
+      _collectObjects(
+          root, 'playlistVideoRenderer', ytVideos);
+      songs.addAll(ytVideos
+          .map(_parsePlaylistVideoRenderer)
+          .whereType<YouTubeMusicTrack>());
+    }
+    final seen = <String>{};
+    return songs.where((s) => seen.add(s.videoId)).toList();
+  }
+  String? _directWatchVideoId(Map<String, dynamic> r) {
+    String? watchId(Map? m) =>
+        (m?['watchEndpoint'] as Map?)?['videoId']?.toString();
+    final playlistItem = r['playlistItemData'];
+    if (playlistItem is Map &&
+        playlistItem['videoId']?.toString().isNotEmpty == true) {
+      return playlistItem['videoId'].toString();
+    }
+    final nav = r['navigationEndpoint'];
+    if (nav is Map) {
+      final id = watchId(nav);
+      if (id != null && id.isNotEmpty) return id;
+    }
+    final overlay = r['thumbnailOverlay'];
+    if (overlay is Map) {
+      final content = (overlay[
+              'musicItemThumbnailOverlayRenderer'] as Map?)?[
+          'content'];
+      if (content is Map) {
+        final play = (content['musicPlayButtonRenderer']
+            as Map?)?['playNavigationEndpoint'];
+        if (play is Map) {
+          final id = watchId(play);
+          if (id != null && id.isNotEmpty) return id;
+        }
+      }
+    }
+    return null;
+  }
+
+  YouTubeMusicTrack? _parsePlaylistVideoRenderer(
+      Map<String, dynamic> r) {
+    final videoId = r['videoId']?.toString();
+    if (videoId == null || videoId.isEmpty) return null;
+    final titleObj = r['title'];
+    String? title;
+    if (titleObj is Map) {
+      final runs = titleObj['runs'];
+      if (runs is List) {
+        title = runs
+            .whereType<Map>()
+            .map((e) => e['text']?.toString() ?? '')
+            .join();
+      }
+      title ??= titleObj['simpleText']?.toString();
+    }
+    if (title == null || title.isEmpty) return null;
+    final byline = r['shortBylineText'];
+    String artist = 'Unknown artist';
+    if (byline is Map && byline['runs'] is List) {
+      final runs = (byline['runs'] as List).whereType<Map>();
+      if (runs.isNotEmpty) {
+        artist = runs.first['text']?.toString() ?? artist;
+      }
+    }
+    final duration =
+        int.tryParse(r['lengthSeconds']?.toString() ?? '') ?? 0;
+    String artworkUrl = '';
+    final thumbs = r['thumbnail'];
+    if (thumbs is Map && thumbs['thumbnails'] is List) {
+      final list =
+          (thumbs['thumbnails'] as List).whereType<Map>();
+      if (list.isNotEmpty) {
+        artworkUrl = highResolutionArtwork(
+            list.last['url']?.toString() ?? '');
+      }
+    }
+    return YouTubeMusicTrack(
+      videoId: videoId,
+      title: title,
+      artist: artist,
+      artworkUrl: artworkUrl,
+      durationSeconds: duration,
+    );
+  }
+
+  YouTubeMusicTrack? _parsePlaylistPanelSong(
+      Map<String, dynamic> r) {
+    if (r.containsKey('unplayableText')) return null;
+    final videoId = r['videoId']?.toString() ??
+        ((r['navigationEndpoint']
+                as Map?)?['watchEndpoint']
+            as Map?)?['videoId']
+            ?.toString();
+    if (videoId == null || videoId.isEmpty) return null;
+    final titleObj = r['title'];
+    String title = '';
+    if (titleObj is Map) {
+      final runs = titleObj['runs'];
+      if (runs is List) {
+        title = runs
+            .whereType<Map>()
+            .map((e) => e['text']?.toString() ?? '')
+            .join()
+            .trim();
+      }
+      if (title.isEmpty) {
+        title =
+            titleObj['simpleText']?.toString().trim() ?? '';
+      }
+    }
+    if (title.isEmpty) return null;
+    final byline = (r['longBylineText'] ?? r['shortBylineText']);
+    final details = byline is Map && byline['runs'] is List
+        ? (byline['runs'] as List).whereType<Map>().toList()
+        : <Map<String, dynamic>>[];
+    String artist = '';
+    for (final run in details) {
+      final browseId = ((run['navigationEndpoint']
+              as Map?)?['browseEndpoint']
+          as Map?)?['browseId']
+          ?.toString();
+      if (browseId != null && browseId.startsWith('UC')) {
+        artist = run['text']?.toString() ?? '';
+        break;
+      }
+    }
+    if (artist.isEmpty) {
+      artist = details
+          .map((e) => e['text']?.toString() ?? '')
+          .firstWhere(_isLikelyArtistDetail,
+              orElse: () => '');
+    }
+    if (artist.isEmpty) artist = 'Unknown artist';
+    String album = '';
+    for (final run in details) {
+      final browseId = ((run['navigationEndpoint']
+              as Map?)?['browseEndpoint']
+          as Map?)?['browseId']
+          ?.toString();
+      if (browseId != null && browseId.startsWith('MPRE')) {
+        album = run['text']?.toString() ?? '';
+        break;
+      }
+    }
+    var duration = 0;
+    if (r['lengthText'] is Map) {
+      final runs = (r['lengthText'] as Map)['runs'];
+      if (runs is List) {
+        for (final e in runs.whereType<Map>()) {
+          final d =
+              parseDuration(e['text']?.toString() ?? '');
+          if (d != null) {
+            duration = d;
+            break;
+          }
+        }
+      }
+    }
+    return YouTubeMusicTrack(
+      videoId: videoId,
+      title: title,
+      artist: artist,
+      album: album,
+      artworkUrl: _rendererArtwork(r),
+      durationSeconds: duration,
+    );
+  }
+
+  YouTubeMusicTrack? _parseSong(Map<String, dynamic> r) {
+    String? videoId =
+        _directWatchVideoId(r) ?? _findString(r, 'videoId');
+    if (videoId == null || videoId.isEmpty) return null;
+    final columns =
+        r['flexColumns'] is List ? r['flexColumns'] as List : null;
+    Map? colText(int i) {
+      if (columns == null || i >= columns.length) return null;
+      final col = columns[i];
+      if (col is! Map) return null;
+      return (col['musicResponsiveListItemFlexColumnRenderer']
+          as Map?)?['text'] as Map?;
+    }
+
+    final titleRuns = colText(0)?['runs'];
+    String title = '';
+    if (titleRuns is List) {
+      title = titleRuns
+          .whereType<Map>()
+          .map((e) => e['text']?.toString() ?? '')
+          .join()
+          .trim();
+    }
+    if (title.isEmpty) return null;
+    final detailRuns = colText(1)?['runs'];
+    final details = detailRuns is List
+        ? detailRuns.whereType<Map>().toList()
+        : <Map<String, dynamic>>[];
+    String artist = '';
+    for (final run in details) {
+      final browseId = ((run['navigationEndpoint']
+              as Map?)?['browseEndpoint']
+          as Map?)?['browseId']
+          ?.toString();
+      if (browseId != null && browseId.startsWith('UC')) {
+        artist = run['text']?.toString() ?? '';
+        break;
+      }
+    }
+    if (artist.isEmpty) {
+      artist = details
+          .map((e) => e['text']?.toString() ?? '')
+          .firstWhere(
+              (t) => _isUsefulDetail(t) && parseDuration(t) == null,
+              orElse: () => '');
+    }
+    if (artist.isEmpty) artist = 'Unknown artist';
+    String album = '';
+    for (final run in details) {
+      final browseId = ((run['navigationEndpoint']
+              as Map?)?['browseEndpoint']
+          as Map?)?['browseId']
+          ?.toString();
+      if (browseId != null && browseId.startsWith('MPRE')) {
+        album = run['text']?.toString() ?? '';
+        break;
+      }
+    }
+    return YouTubeMusicTrack(
+      videoId: videoId,
+      title: title,
+      artist: artist,
+      album: album,
+      artworkUrl: _rendererArtwork(r),
+      durationSeconds: _durationFromRenderer(r),
+    );
+  }
+
+  /// Duration lives in different places depending on the page:
+  /// search rows often use `text.simpleText` on a flex/fixed column,
+  /// album pages use `runs` on `fixedColumns`, queue panels use
+  /// `lengthText`. Any `m:ss` / `h:mm:ss` token wins.
+  int _durationFromRenderer(Map<String, dynamic> r) {
+    final lengthSeconds =
+        int.tryParse(r['lengthSeconds']?.toString() ?? '') ?? 0;
+    if (lengthSeconds > 0 && lengthSeconds <= 24 * 3600) {
+      return lengthSeconds;
+    }
+    int? fromText(Object? text) {
+      if (text is String) return parseDuration(text);
+      if (text is! Map) return null;
+      final simple = text['simpleText']?.toString();
+      if (simple != null) {
+        final d = parseDuration(simple);
+        if (d != null) return d;
+      }
+      final runs = text['runs'];
+      if (runs is List) {
+        for (final run in runs.whereType<Map>()) {
+          final d = parseDuration(run['text']?.toString() ?? '');
+          if (d != null) return d;
+        }
+      }
+      return null;
+    }
+
+    for (final key in const ['flexColumns', 'fixedColumns']) {
+      final cols = r[key];
+      if (cols is! List) continue;
+      for (final col in cols.whereType<Map>()) {
+        for (final renderer in col.values) {
+          if (renderer is! Map) continue;
+          final d = fromText(renderer['text']);
+          if (d != null) return d;
+        }
+      }
+    }
+    final length = fromText(r['lengthText']);
+    if (length != null) return length;
+    final overlays = <Map<String, dynamic>>[];
+    _collectObjects(r, 'thumbnailOverlayTimeStatusRenderer', overlays);
+    for (final o in overlays) {
+      final d = fromText(o['text']);
+      if (d != null) return d;
+    }
+    return 0;
+  }
+
+  List<YouTubeMusicEntity> _parseEntityRenderers(
+      Object? root, YouTubeEntityKind kind) {
+    final renderers = <Map<String, dynamic>>[];
+    _collectObjects(
+        root, 'musicResponsiveListItemRenderer', renderers);
+    final seen = <String>{};
+    final out = <YouTubeMusicEntity>[];
+    for (final r in renderers) {
+      final e = _parseEntity(r, kind);
+      if (e != null && seen.add(e.browseId)) out.add(e);
+    }
+    return out;
+  }
+
+  YouTubeMusicEntity? _parseEntity(
+      Map<String, dynamic> r, YouTubeEntityKind kind) {
+    final nav = r['navigationEndpoint'];
+    final browse = nav is Map ? nav['browseEndpoint'] : null;
+    if (browse is! Map) return null;
+    final browseId = browse['browseId']?.toString() ?? '';
+    if (browseId.isEmpty) return null;
+    if (kind == YouTubeEntityKind.artist &&
+        !browseId.startsWith('UC')) {
+      return null;
+    }
+    if (kind == YouTubeEntityKind.album &&
+        !browseId.startsWith('MPRE')) {
+      return null;
+    }
+    final columns =
+        r['flexColumns'] is List ? r['flexColumns'] as List : null;
+    String name = '';
+    if (columns != null && columns.isNotEmpty) {
+      final col0 = columns[0];
+      if (col0 is Map) {
+        final text = (col0[
+                'musicResponsiveListItemFlexColumnRenderer']
+            as Map?)?['text'];
+        if (text is Map && text['runs'] is List) {
+          name = (text['runs'] as List)
+              .whereType<Map>()
+              .map((e) => e['text']?.toString() ?? '')
+              .join()
+              .trim();
+        }
+      }
+    }
+    if (name.isEmpty) return null;
+    List<Map<String, dynamic>> details = const [];
+    if (columns != null && columns.length > 1) {
+      final col1 = columns[1];
+      if (col1 is Map) {
+        final text = (col1[
+                'musicResponsiveListItemFlexColumnRenderer']
+            as Map?)?['text'];
+        if (text is Map && text['runs'] is List) {
+          details = (text['runs'] as List)
+              .whereType<Map<String, dynamic>>()
+              .toList();
+        }
+      }
+    }
+    String artist = '';
+    if (kind == YouTubeEntityKind.album) {
+      for (final run in details) {
+        final bid = ((run['navigationEndpoint']
+                as Map?)?['browseEndpoint']
+            as Map?)?['browseId']
+            ?.toString();
+        if (bid != null && bid.startsWith('UC')) {
+          artist = run['text']?.toString() ?? '';
+          break;
+        }
+      }
+    }
+    const skip = {'â€¢', '•', 'Artist', 'Album', 'EP', 'Single'};
+    final subtitle = details
+        .map((e) => e['text']?.toString().trim() ?? '')
+        .where((t) => t.isNotEmpty && !skip.contains(t))
+        .join(' • ')
+        .trim();
+    return YouTubeMusicEntity(
+      kind: kind,
+      name: name,
+      artist: artist,
+      subtitle: subtitle,
+      browseId: browseId,
+      playlistId: _findString(r, 'playlistId') ?? '',
+      artworkUrl: _rendererArtwork(r),
+    );
+  }
+
+  List<YouTubePlaylistSummary> _parsePlaylistRenderers(
+      Object? root) {
+    final renderers = <Map<String, dynamic>>[];
+    for (final k in [
+      'musicResponsiveListItemRenderer',
+      'musicTwoRowItemRenderer',
+      'gridPlaylistRenderer',
+      'musicGridItemRenderer',
+      'playlistRenderer',
+    ]) {
+      _collectObjects(root, k, renderers);
+    }
+    final seen = <String>{};
+    final out = <YouTubePlaylistSummary>[];
+    for (final r in renderers) {
+      final s = _parsePlaylistSummary(r);
+      if (s != null && seen.add(s.id)) out.add(s);
+    }
+    return out;
+  }
+
+  YouTubePlaylistSummary? _parsePlaylistSummary(
+      Map<String, dynamic> r) {
+    Map? nav = (r['navigationEndpoint'] as Map?)?[
+        'browseEndpoint'] as Map?;
+    nav ??= () {
+      final title = r['title'];
+      if (title is Map && title['runs'] is List) {
+        final runs =
+            (title['runs'] as List).whereType<Map>();
+        if (runs.isNotEmpty) {
+          return (runs.first['navigationEndpoint']
+              as Map?)?['browseEndpoint'] as Map?;
+        }
+      }
+      return null;
+    }();
+    nav ??= () {
+      final overlay = r['thumbnailOverlay'];
+      if (overlay is! Map) return null;
+      final content = (overlay[
+              'musicItemThumbnailOverlayRenderer']
+          as Map?)?['content'];
+      if (content is! Map) return null;
+      final play = (content['musicPlayButtonRenderer']
+          as Map?)?['playNavigationEndpoint'];
+      return play is Map
+          ? play['watchEndpoint'] as Map?
+          : null;
+    }();
+    if (nav == null) {
+      final onTap = r['onTap'];
+      nav = onTap is Map
+          ? onTap['browseEndpoint'] as Map?
+          : null;
+    }
+    if (nav == null) return null;
+    final browseId = nav['browseId']?.toString() ??
+        nav['playlistId']?.toString() ??
+        '';
+    if (browseId.isEmpty) return null;
+    final playlistId = browseId.startsWith('VL')
+        ? browseId.substring(2)
+        : browseId;
+    String? title;
+    final flex = r['flexColumns'];
+    if (flex is List && flex.isNotEmpty) {
+      final col0 = flex[0];
+      if (col0 is Map) {
+        final text = (col0[
+                'musicResponsiveListItemFlexColumnRenderer']
+            as Map?)?['text'];
+        if (text is Map && text['runs'] is List) {
+          title = (text['runs'] as List)
+              .whereType<Map>()
+              .map((e) => e['text']?.toString() ?? '')
+              .join();
+        }
+      }
+    }
+    title ??= () {
+      final t = r['title'];
+      if (t is Map) {
+        if (t['runs'] is List) {
+          return (t['runs'] as List)
+              .whereType<Map>()
+              .map((e) => e['text']?.toString() ?? '')
+              .join();
+        }
+        return t['simpleText']?.toString();
+      }
+      return null;
+    }();
+    if (title == null || title.isEmpty) return null;
+    List? subtitleRuns;
+    if (flex is List && flex.length > 1) {
+      final col1 = flex[1];
+      if (col1 is Map) {
+        final text = (col1[
+                'musicResponsiveListItemFlexColumnRenderer']
+            as Map?)?['text'];
+        if (text is Map && text['runs'] is List) {
+          subtitleRuns = text['runs'] as List;
+        }
+      }
+    }
+    subtitleRuns ??= () {
+      final s = r['subtitle'];
+      return s is Map && s['runs'] is List
+          ? s['runs'] as List
+          : null;
+    }();
+    String author = '';
+    String trackCountText = '';
+    if (subtitleRuns != null) {
+      for (final e in subtitleRuns.whereType<Map>()) {
+        final bid = ((e['navigationEndpoint']
+                as Map?)?['browseEndpoint']
+            as Map?)?['browseId']
+            ?.toString();
+        if (bid != null && bid.startsWith('UC')) {
+          author = e['text']?.toString() ?? '';
+          break;
+        }
+      }
+      if (author.isEmpty && subtitleRuns.isNotEmpty) {
+        final first =
+            (subtitleRuns.first as Map?)?['text']?.toString() ?? '';
+        if (first.toLowerCase() != 'playlist') author = first;
+      }
+      for (final e in subtitleRuns.whereType<Map>()) {
+        final text =
+            e['text']?.toString().toLowerCase() ?? '';
+        if (text.contains('song') ||
+            text.contains('track')) {
+          trackCountText = e['text']?.toString() ?? '';
+          break;
+        }
+      }
+    }
+    return YouTubePlaylistSummary(
+      id: playlistId,
+      title: title.trim(),
+      author: author.trim(),
+      trackCountText: trackCountText,
+      artworkUrl: _extractThumbnailsUrl(r) ?? '',
+    );
+  }
+
+  String _rendererArtwork(Map<String, dynamic> r) {
+    final thumb = r['thumbnail'];
+    if (thumb is Map) {
+      final inner = thumb['musicThumbnailRenderer'];
+      if (inner is Map) {
+        final t = inner['thumbnail'];
+        if (t is Map && t['thumbnails'] is List) {
+          final list =
+              (t['thumbnails'] as List).whereType<Map>();
+          if (list.isNotEmpty) {
+            return highResolutionArtwork(
+                list.last['url']?.toString() ?? '');
+          }
+        }
+      }
+      if (thumb['thumbnails'] is List) {
+        final list =
+            (thumb['thumbnails'] as List).whereType<Map>();
+        if (list.isNotEmpty) {
+          return highResolutionArtwork(
+              list.last['url']?.toString() ?? '');
+        }
+      }
+    }
+    return '';
+  }
+
+  String? _extractThumbnailsUrl(Object? renderer) {
+    final arrays = <List>[];
+    void find(Object? el) {
+      if (el is Map<String, dynamic>) {
+        final th = el['thumbnails'];
+        if (th is List && th.isNotEmpty) arrays.add(th);
+        for (final v in el.values) {
+          find(v);
+        }
+      } else if (el is List) {
+        for (final v in el) {
+          find(v);
+        }
+      }
+    }
+
+    Object? node = renderer;
+    if (renderer is Map<String, dynamic>) {
+      node = renderer['thumbnail'] ??
+          renderer['thumbnailRenderer'] ??
+          renderer;
+    }
+    find(node);
+    if (arrays.isEmpty) return null;
+    final arr = arrays.first;
+    String? url;
+    for (final e in arr.reversed) {
+      if (e is Map && e['url']?.toString().isNotEmpty == true) {
+        url = e['url'].toString();
+        break;
+      }
+    }
+    url ??= () {
+      for (final e in arr) {
+        if (e is Map && e['url']?.toString().isNotEmpty == true) {
+          return e['url'].toString();
+        }
+      }
+      return null;
+    }();
+    if (url == null || url.isEmpty) return null;
+    return highResolutionArtwork(url);
+  }
+
+  void _collectObjects(
+      Object? element, String key, List<Map<String, dynamic>> out) {
+    if (element is Map<String, dynamic>) {
+      element.forEach((name, child) {
+        if (name == key && child is Map<String, dynamic>) {
+          out.add(child);
+        }
+        _collectObjects(child, key, out);
+      });
+    } else if (element is List) {
+      for (final child in element) {
+        _collectObjects(child, key, out);
+      }
+    }
+  }
+
+  String? _findString(Object? element, String key) {
+    if (element is Map<String, dynamic>) {
+      final direct = element[key];
+      if (direct is String) return direct;
+      for (final v in element.values) {
+        final found = _findString(v, key);
+        if (found != null) return found;
+      }
+    } else if (element is List) {
+      for (final v in element) {
+        final found = _findString(v, key);
+        if (found != null) return found;
+      }
+    }
+    return null;
+  }
+
+  String? _runsText(Object? runs) {
+    if (runs is List) {
+      return runs
+          .whereType<Map>()
+          .map((r) => r['text']?.toString() ?? '')
+          .join();
+    }
+    return null;
+  }
+}
+
+class _Candidate {
+  final ResolvedStream stream;
+  final bool adaptive;
+  final int bitrate;
+  final int itag;
+  _Candidate({
+    required this.stream,
+    required this.adaptive,
+    required this.bitrate,
+    required this.itag,
+  });
+}
+
+class _ResolvedRef {
+  final String clientProfile;
+  final String authScope;
+  const _ResolvedRef(this.clientProfile, this.authScope);
+}
+
+class _BrowsePages {
+  final List<YouTubeMusicTrack> tracks;
+  final bool isComplete;
+  const _BrowsePages(this.tracks, this.isComplete);
+}
+
+class _PlaylistRoot {
+  final _Map root;
+  final bool authenticated;
+  const _PlaylistRoot(this.root, this.authenticated);
+}
+
+typedef _Map = Map<String, dynamic>;
+
+/// Reactive mirror of [InnerTubeMusicApi.connection].
+///
+/// The API object itself is a long-lived mutable singleton exposed via
+/// a plain [Provider], so mutating `_connection` never rebuilds
+/// `ref.watch(innerTubeProvider)` widgets. UI must watch THIS for the
+/// connected flag and update it after every connect/signOut/restore.
+final ytConnectionProvider =
+    StateProvider<YtConnection>((_) => const YtConnection());
+
+/// Multi-profile roster (Google logins + their brand channels).
+/// Hydrated at startup from secure storage; the active jar/channel
+/// itself lives in [ytConnectionProvider].
+final ytProfilesProvider =
+    StateProvider<List<YtProfile>>((_) => const []);
+
+/// Publish + persist the roster (profiles carry their own jars).
+Future<void> persistYtProfiles(
+    WidgetRef ref, List<YtProfile> profiles) async {
+  ref.read(ytProfilesProvider.notifier).state = profiles;
+  try {
+    await ref
+        .read(secureStoreProvider)
+        .writeYtProfiles(YtProfile.listToJson(profiles));
+  } catch (_) {}
+}
+
+/// Provisional roster entry for a jar whose identity is transiently
+/// unresolvable (fresh login, `account_menu` not yet populated).
+/// Keyed under the 'unknown' sentinel (or the handle/hint when
+/// available) so handle-first matching still finds it; the startup
+/// [repairUnknownYtProfiles] pass re-keys it once identity serves.
+/// The jar itself is trusted here because every connect path
+/// re-verifies via `connectAs` before showing connected.
+Future<YtProfile> _upsertProvisional(
+  WidgetRef ref, {
+  required String cookies,
+  String pageId = '',
+  String emailHint = '',
+}) async {
+  final now = DateTime.now().millisecondsSinceEpoch;
+  final email = emailHint.isNotEmpty ? emailHint : 'unknown';
+  final roster = [...ref.read(ytProfilesProvider)];
+  final channel = YtChannel(pageId: pageId);
+  // Same-jar match: a re-capture whose identity is transiently empty
+  // refreshes the existing entry instead of forking a duplicate.
+  final pi = roster.indexWhere((p) =>
+      p.email == email ||
+      (p.cookies.isNotEmpty && p.cookies == cookies));
+  late final YtProfile profile;
+  if (pi < 0) {
+    profile = YtProfile(
+      email: email,
+      cookies: cookies,
+      channels: [channel],
+      activePageId: pageId,
+      lastUsedMillis: now,
+    );
+    roster.add(profile);
+  } else {
+    final channels = [...roster[pi].channels];
+    final ci = channels.indexWhere((c) => c.pageId == pageId);
+    if (ci < 0) {
+      channels.add(channel);
+    } else {
+      channels[ci] = channel;
+    }
+    profile = roster[pi].copyWith(
+      cookies: cookies,
+      channels: channels,
+      activePageId: pageId,
+      lastUsedMillis: now,
+    );
+    roster[pi] = profile;
+  }
+  await persistYtProfiles(ref, roster);
+  return profile;
+}
+
+/// Upsert a captured jar into the roster, keyed by account email +
+/// channel name. Resolves identity (optionally scoped to a brand
+/// [pageId]), creates the profile/channel on first sight, refreshes
+/// cookies + photo afterwards.
+///
+/// A jar that just verified is NEVER dropped: when identity
+/// resolution comes back empty (transient right after login —
+/// `account_menu` not yet populated), a provisional entry is stored
+/// under the 'unknown' sentinel instead of returning null, so the
+/// chooser and settings card have a real row. The jar is
+/// authoritative (connectAs verifies before anything shows
+/// connected) and [repairUnknownYtProfiles] re-keys the entry once
+/// YouTube serves identity. Returns null only when [cookies] is
+/// empty.
+/// Brand-scoped menus often omit the email — pass [emailHint] (e.g.
+/// the main channel's resolved email for the same jar) so the entry
+/// still keys correctly instead of degrading to 'unknown'.
+Future<YtProfile?> upsertYtCapture(
+  WidgetRef ref, {
+  required String cookies,
+  String pageId = '',
+  String emailHint = '',
+}) async {
+  if (cookies.isEmpty) return null;
+  final api = ref.read(innerTubeProvider);
+  final identity =
+      await api.resolveIdentityFor(cookies, pageId: pageId);
+  final resolved = identity != null &&
+      (identity.name.isNotEmpty ||
+          identity.email.isNotEmpty ||
+          identity.handle.isNotEmpty);
+  if (!resolved) {
+    if (kDebugMode) {
+      debugPrint(
+          'YtProfile: identity transiently empty, provisional entry');
+    }
+    return _upsertProvisional(ref,
+        cookies: cookies, pageId: pageId, emailHint: emailHint);
+  }
+  // Roster key is the Google account email (stable across channels
+  // and handle renames); the display handle lives on the channel
+  // entry. Matching is handle-first so re-captures find their entry
+  // even if the stored email is stale.
+  //
+  // Brand-scoped menus omit the email, so when it is missing here the
+  // owning account is resolved via the main channel of the SAME jar.
+  // This keeps every caller correct without threading hints around.
+  var hint = emailHint;
+  if (hint.isEmpty &&
+      pageId.isNotEmpty &&
+      identity.email.isEmpty) {
+    try {
+      final owner =
+          await api.resolveIdentityFor(cookies);
+      hint = owner?.email ?? '';
+      if (hint.isNotEmpty && kDebugMode) {
+        debugPrint('YtProfile: owner email via main identity');
+      }
+    } catch (_) {}
+  }
+  final email = identity.email.isNotEmpty
+      ? identity.email
+      : (hint.isNotEmpty
+          ? hint
+          : (identity.handle.isNotEmpty
+              ? identity.handle
+              : 'unknown'));
+  if (email == 'unknown' && kDebugMode) {
+    debugPrint(
+        'YtProfile: no email anywhere (page=${pageId.isEmpty ? 'main' : 'brand'})');
+  }
+  final now = DateTime.now().millisecondsSinceEpoch;
+  final roster = [...ref.read(ytProfilesProvider)];
+  final channel = YtChannel(
+    pageId: pageId,
+    name: identity.name,
+    handle: identity.handle,
+    photoUrl: identity.photoUrl,
+  );
+  YtProfile profile;
+  // Handle-first matching: finds the entry even when the stored
+  // email is stale or was never resolved. Email match second.
+  // Same-jar match last: heals provisional entries ('unknown' email,
+  // empty handle) once identity starts serving — cookie headers are
+  // unique per Google login, so this never merges distinct accounts.
+  final handle = identity.handle;
+  final pi = roster.indexWhere((p) =>
+      (handle.isNotEmpty &&
+          p.channels.any((c) => c.handle == handle)) ||
+      p.email == email ||
+      (p.cookies.isNotEmpty && p.cookies == cookies));
+  if (pi < 0) {
+    profile = YtProfile(
+      email: email,
+      cookies: cookies,
+      channels: [channel],
+      activePageId: pageId,
+      lastUsedMillis: now,
+    );
+    roster.add(profile);
+  } else {
+    final channels = [...roster[pi].channels];
+    final ci =
+        channels.indexWhere((c) => c.pageId == pageId);
+    if (ci < 0) {
+      channels.add(channel);
+    } else {
+      channels[ci] = channel;
+    }
+    // Re-key the email when resolution improved (provisional
+    // 'unknown' → real email), but never downgrade a known email.
+    final prevEmail = roster[pi].email;
+    final nextEmail =
+        (email == 'unknown' || email.isEmpty) &&
+                prevEmail != 'unknown' &&
+                prevEmail.isNotEmpty
+            ? prevEmail
+            : email;
+    profile = YtProfile(
+      email: nextEmail,
+      cookies: cookies,
+      channels: channels,
+      activePageId: pageId,
+      lastUsedMillis: now,
+    );
+    roster[pi] = profile;
+  }
+  await persistYtProfiles(ref, roster);
+  if (kDebugMode) {
+    debugPrint(
+        'YtProfile: upserted $email page=${pageId.isEmpty ? 'main' : '${pageId.length} digits'} '
+        'roster=${_rosterDebug(roster)}');
+  }
+  return profile;
+}
+
+/// Roster summary for diagnostics: emails, channel page modes, jar
+/// sizes. No secret material ever logged.
+String _rosterDebug(List<YtProfile> roster) {
+  return roster
+      .map((p) =>
+          '${p.email}(${p.cookies.length}ch,active=${p.activePageId.isEmpty ? 'main' : '${p.activePageId.length}d'}'
+          ',ch=[${p.channels.map((c) => c.pageId.isEmpty ? 'main' : '${c.pageId.length}d').join('/')}]')
+      .join(' ');
+}
+
+/// Self-heal for stale roster entries: literal 'unknown' strings
+/// (written into email/handle/name slots by pre-hint builds),
+/// missing handles, and unkeyed profiles. Re-resolves identity from
+/// stored jars — email via the main channel (jars are account-level;
+/// brand menus omit it), name/handle/photo per channel pageId — and
+/// merges into correctly-keyed profiles. Bounded, fail-soft, runs at
+/// startup restore; rows already complete are never refetched, so
+/// this is a no-op after the first heal. Dead jars stay untouched.
+///
+/// Takes [Ref] (not [WidgetRef]) so the provider-restore path can
+/// call it; persistence is inlined for the same reason.
+Future<void> repairUnknownYtProfiles(Ref ref) async {
+  Future<void> persist(List<YtProfile> roster) async {
+    ref.read(ytProfilesProvider.notifier).state = roster;
+    try {
+      await ref
+          .read(secureStoreProvider)
+          .writeYtProfiles(YtProfile.listToJson(roster));
+    } catch (_) {}
+  }
+
+  final roster = [...ref.read(ytProfilesProvider)];
+  final api = ref.read(innerTubeProvider);
+  var changed = false;
+
+  // Pass 1: scrub literal 'unknown' sentinels (keep the jar + pageId).
+  for (var i = 0; i < roster.length; i++) {
+    final p = roster[i];
+    if (p.email != 'unknown' &&
+        !p.channels.any((c) =>
+            c.name == 'unknown' || c.handle == 'unknown')) {
+      continue;
+    }
+    roster[i] = YtProfile(
+      email: p.email == 'unknown' ? '' : p.email,
+      cookies: p.cookies,
+      channels: p.channels
+          .map((c) => YtChannel(
+                pageId: c.pageId,
+                name: c.name == 'unknown' ? '' : c.name,
+                handle:
+                    c.handle == 'unknown' ? '' : c.handle,
+                photoUrl: c.photoUrl,
+              ))
+          .toList(),
+      activePageId: p.activePageId,
+      lastUsedMillis: p.lastUsedMillis,
+    );
+    changed = true;
+  }
+
+  // Pass 2: re-key email-less profiles via the main identity of the
+  // stored jar; merge into the correctly-keyed profile when one
+  // exists.
+  for (var i = 0; i < roster.length; i++) {
+    if (roster[i].email.isNotEmpty) continue;
+    YtAccount? identity;
+    try {
+      identity = await api.resolveIdentityFor(
+          roster[i].cookies);
+    } catch (_) {
+      identity = null;
+    }
+    final email = identity?.email ?? '';
+    if (identity == null || email.isEmpty) continue;
+    if (kDebugMode) {
+      debugPrint('YtProfile: repaired unknown -> $email');
+    }
+    final stale = roster[i];
+    final target =
+        roster.indexWhere((p) => p.email == email);
+    if (target < 0) {
+      roster[i] = YtProfile(
+        email: email,
+        cookies: stale.cookies,
+        channels: stale.channels,
+        activePageId: stale.activePageId,
+        lastUsedMillis: stale.lastUsedMillis,
+      );
+    } else if (target != i) {
+      final channels = [...roster[target].channels];
+      for (final c in stale.channels) {
+        if (!channels.any((e) => e.pageId == c.pageId)) {
+          channels.add(c);
+        }
+      }
+      roster[target] = roster[target].copyWith(
+        channels: channels,
+      );
+      roster.removeAt(i);
+      await persist(roster);
+      return repairUnknownYtProfiles(ref);
+    }
+    changed = true;
+  }
+
+  // Pass 3: refresh rows missing handle/name/photo via their own
+  // pageId identity. Rows already complete are skipped, so steady
+  // state performs zero network calls.
+  for (var i = 0; i < roster.length; i++) {
+    final p = roster[i];
+    if (p.cookies.isEmpty) continue;
+    var channels = [...p.channels];
+    var touched = false;
+    for (var ci = 0; ci < channels.length; ci++) {
+      final c = channels[ci];
+      if (c.name.isNotEmpty &&
+          c.handle.isNotEmpty &&
+          c.photoUrl.isNotEmpty) {
+        continue;
+      }
+      YtAccount? identity;
+      try {
+        identity = await api.resolveIdentityFor(
+          p.cookies,
+          pageId: c.pageId,
+        );
+      } catch (_) {
+        identity = null;
+      }
+      if (identity == null) continue;
+      final name = identity.name.isNotEmpty
+          ? identity.name
+          : c.name;
+      var handle = identity.handle.isNotEmpty
+          ? identity.handle
+          : c.handle;
+      if (handle == 'unknown') handle = '';
+      final photo = identity.photoUrl.isNotEmpty
+          ? identity.photoUrl
+          : c.photoUrl;
+      if (name != c.name ||
+          handle != c.handle ||
+          photo != c.photoUrl) {
+        channels[ci] = YtChannel(
+          pageId: c.pageId,
+          name: name,
+          handle: handle,
+          photoUrl: photo,
+        );
+        touched = true;
+      }
+    }
+    if (touched) {
+      roster[i] = p.copyWith(channels: channels);
+      changed = true;
+    }
+  }
+
+  if (changed) await persist(roster);
+}
+
+/// Switch the active identity to a roster jar + channel. Atomic via
+/// [InnerTubeMusicApi.connectAs] (previous session restored on
+/// failure), then roster bookkeeping + reactive publish (account
+/// providers refetch automatically).
+Future<void> switchYtIdentity(
+  WidgetRef ref, {
+  required YtProfile profile,
+  required String pageId,
+}) async {
+  final api = ref.read(innerTubeProvider);
+  if (kDebugMode) {
+    debugPrint(
+        'YtProfile: switching to ${profile.email} page=${pageId.isEmpty ? 'main' : '${pageId.length} digits'} '
+        'jar=${profile.cookies.length}ch');
+  }
+  await api.connectAs(
+    cookies: profile.cookies,
+    profileEmail: profile.email,
+    pageId: pageId,
+  );
+  final roster = [...ref.read(ytProfilesProvider)];
+  final pi = roster.indexWhere((p) => p.email == profile.email);
+  if (pi >= 0) {
+    roster[pi] = roster[pi].copyWith(
+      activePageId: pageId,
+      lastUsedMillis: DateTime.now().millisecondsSinceEpoch,
+    );
+    await persistYtProfiles(ref, roster);
+  }
+  ref.read(ytConnectionProvider.notifier).state = api.connection;
+}
+
+final innerTubeProvider = Provider<InnerTubeMusicApi>((ref) {
+  final dio = DioFactory.create();
+  final api = InnerTubeMusicApi(
+    dio,
+    ref.watch(secureStoreProvider),
+  );
+  // Fire-and-forget restore, then publish to the reactive mirrors so
+  // the settings row flips to Connected without needing a rebuild.
+  unawaited(() async {
+    try {
+      await api.loadPersistedConnection();
+      ref.read(ytConnectionProvider.notifier).state =
+          api.connection;
+    } catch (_) {}
+    try {
+      final raw =
+          await ref.read(secureStoreProvider).readYtProfiles() ??
+              '';
+      if (raw.isNotEmpty) {
+        ref.read(ytProfilesProvider.notifier).state =
+            YtProfile.listFromJson(raw);
+        await repairUnknownYtProfiles(ref);
+      }
+    } catch (_) {}
+  }());
+  // Persistent disk cache only. poToken minting was removed: direct-URL
+  // clients resolve streams without any WebView flow.
+  try {
+    api.attachDiskCache(ref.watch(databaseProvider));
+  } catch (_) {}
+  return api;
+});

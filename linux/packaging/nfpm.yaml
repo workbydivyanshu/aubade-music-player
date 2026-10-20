@@ -1,0 +1,63 @@
+# Aubade — Linux system packages (deb + rpm) via nFPM.
+# Built ONLY for releases (v* tags); see .github/workflows/desktop.yml.
+# VERSION comes from the tag (v1.0.0 -> 1.0.0); nFPM expands env vars.
+name: aubade
+arch: amd64
+platform: linux
+version: ${VERSION}
+# Transitional shims for the rename (lastwave-desktop -> lastwave -> aubade):
+# deb maps replaces->Replaces, conflicts->Conflicts; rpm maps
+# replaces->Obsoletes. Lets the new package supersede the old names
+# instead of co-installing under /opt/aubade alongside /opt/lastwave.
+replaces:
+  - lastwave
+  - lastwave-desktop
+conflicts:
+  - lastwave
+  - lastwave-desktop
+section: sound
+priority: optional
+# Distribution URL intentionally kept on the existing upstream repository.
+maintainer: Clash-Projects <https://github.com/Clash-Projects/LastWave-Desktop>
+description: |-
+  Aubade — desktop music player: YouTube Music, lossless audio,
+  word-synced lyrics and Last.fm scrobbling.
+vendor: Clash-Projects
+homepage: https://github.com/Clash-Projects/LastWave-Desktop
+license: Proprietary — all rights reserved (no LICENSE file yet)
+
+contents:
+  # Release bundle straight into /opt.
+  - src: build/linux/x64/release/bundle
+    dst: /opt/aubade
+    type: tree
+  # CLI entry point.
+  - src: /opt/aubade/aubade
+    dst: /usr/bin/aubade
+    type: symlink
+  # Desktop integration.
+  - src: linux/packaging/aubade.desktop
+    dst: /usr/share/applications/aubade.desktop
+  - src: aubade-logo.png
+    dst: /usr/share/icons/hicolor/512x512/apps/aubade.png
+
+overrides:
+  deb:
+    depends:
+      - libgtk-3-0
+      - libwebkit2gtk-4.1-0
+      - libayatana-appindicator3-1 | libappindicator3-1
+      - libasound2
+      - libmpv2
+      # hotkey_manager links libkeybinder-3.0 at runtime: without this,
+      # global shortcuts are dead on distros that don't ship it.
+      - libkeybinder-3.0-0
+  rpm:
+    depends:
+      - gtk3
+      - webkit2gtk4.1
+      - libappindicator-gtk3
+      - alsa-lib
+      - mpv-libs
+      # Same as above (Fedora name for the keybinder3 runtime).
+      - keybinder3
