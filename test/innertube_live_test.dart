@@ -1,3 +1,6 @@
+@Tags(['live'])
+library;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:aubade/core/network/dio_factory.dart';
 import 'package:aubade/core/storage/secure_store.dart';

@@ -62,7 +62,7 @@ jobs:
         run: flutter analyze --no-fatal-infos
 
       - name: Run tests
-        run: flutter test --fail-fast
+        run: flutter test --fail-fast --exclude-tags=live
 
       - name: Build Linux app
         run: flutter build linux --release

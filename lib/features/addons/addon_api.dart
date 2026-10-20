@@ -972,7 +972,12 @@ class AddonApi implements LosslessSource {
     int expectedDurationSeconds = 0,
     int preferredQuality = 27,
   }) async {
-    if (!isConfigured) return null;
+    // A configured base URL is enough to attempt a resolve: the baked
+    // secret only signs the request, and a missing key fails closed
+    // server-side (404/decoy), so gating here just hides resolvable
+    // catalogs from callers that bypass [isConfigured] (tests, direct
+    // LosslessSource use).
+    if (bases.isEmpty) return null;
     if (preferredQuality == -1) return null;
     if (title.trim().isEmpty || artist.trim().isEmpty) return null;
     final cacheKey =

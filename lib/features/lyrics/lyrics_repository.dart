@@ -670,11 +670,24 @@ class LyricsRepository {
       if (!newMentions && curMentions) return false;
     }
 
-    // 5. Timed lyrics always beat static text: static lines can never
-    // highlight or follow, no matter how complete. Length/richness
-    // below only compare like with like.
-    if (newRes.isSynced && !current.isSynced) return true;
-    if (!newRes.isSynced && current.isSynced) return false;
+    // 5. Mixed sync-kind comparison is decided ENTIRELY here: sync wins
+    // unless the unsynced candidate is a packed full transcription —
+    // at least twice as full (+120 chars) with high average line length
+    // (Apple TTML emits one <p> per stanza), not a padded
+    // one-phrase-per-line template. Same-kind pairs fall through to
+    // length/richness rules below.
+    if (newRes.isSynced != current.isSynced) {
+      final newLen = lyricsBodyLength(newRes);
+      final curLen = lyricsBodyLength(current);
+      final newFuller = newLen - curLen >= 120 && newLen >= (curLen * 2).round();
+      final curFuller = curLen - newLen >= 120 && curLen >= (newLen * 2).round();
+      final curPacked = current.lines.isNotEmpty &&
+          curLen / current.lines.length >= 60;
+      final newPacked = newRes.lines.isNotEmpty &&
+          newLen / newRes.lines.length >= 60;
+      if (newRes.isSynced) return !(curPacked && curFuller);
+      return newPacked && newFuller;
+    }
 
     // 6. Complete text beats a shorter cut of the same sync kind
     final newLen = lyricsBodyLength(newRes);
