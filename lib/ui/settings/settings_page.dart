@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/window.dart';
@@ -26,6 +27,10 @@ import '../../features/presence/discord_presence_service.dart';
 import '../../features/updater/update_models.dart';
 import '../../features/updater/update_service.dart';
 import '../components/update_dialog.dart';
+
+/// Installed app metadata, used by About to show the real runtime version.
+final packageInfoProvider =
+    FutureProvider<PackageInfo>((ref) => PackageInfo.fromPlatform());
 
 const _waveSettingsSections = [
   ('library', 'Library', FluentIcons.music_note),
@@ -1215,6 +1220,7 @@ class _About extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     const repo = 'https://github.com/workbydivyanshu/aubade-music-player';
+    final version = ref.watch(packageInfoProvider).asData?.value.version;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1297,7 +1303,9 @@ class _About extends ConsumerWidget {
               ),
               const SizedBox(height: WaveSpacing.x8),
               Text(
-                'Aubade Desktop · v1.0.0',
+                version == null || version.isEmpty
+                    ? 'Aubade Desktop'
+                    : 'Aubade Desktop · v$version',
                 style: WaveType.meta.copyWith(
                   color: waveTextTertiary(context),
                 ),

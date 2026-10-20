@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -14,7 +15,9 @@ import 'update_models.dart';
 /// The active repository providing official Aubade releases.
 const kUpdateRepoOwner = 'workbydivyanshu';
 const kUpdateRepoName = 'aubade-music-player';
-const kCurrentAppVersion = '1.3.0';
+/// Only used when the runtime version can't be read; source of truth is
+/// pubspec.yaml.
+const kFallbackAppVersion = '1.0.1';
 
 /// Minimum interval between automatic background update checks.
 const kBackgroundCheckInterval = Duration(hours: 12);
@@ -31,7 +34,7 @@ class UpdateService extends StateNotifier<UpdateState> {
       : _dio = dio ?? DioFactory.create(),
         super(const UpdateState());
 
-  /// Compares two SemVer strings (e.g. "1.3.1" vs "1.3.0").
+  /// Compares two SemVer strings (e.g. "1.0.2" vs "1.0.1").
   /// Returns true if [remote] is strictly higher than [current].
   static bool isNewerVersion(String remote, String current) {
     List<int> parse(String v) {
@@ -50,6 +53,28 @@ class UpdateService extends StateNotifier<UpdateState> {
       if (r < c) return false;
     }
     return false;
+  }
+
+  /// Reads the installed app version at runtime.
+  ///
+  /// Falls back to [kFallbackAppVersion] when the platform plugin is
+  /// unavailable (tests or unsupported hosts).
+  Future<String> _readCurrentVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final version = info.version.trim();
+      if (version.isNotEmpty) return version;
+    } catch (_) {}
+    return kFallbackAppVersion;
+  }
+
+  /// Raw contents of `/etc/os-release`, or null when it cannot be read.
+  Future<String?> _readOsRelease() async {
+    try {
+      return await File('/etc/os-release').readAsString();
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Checks GitHub for the latest release.
@@ -81,8 +106,12 @@ class UpdateService extends StateNotifier<UpdateState> {
         return;
       }
 
-      final release = AppReleaseInfo.fromJson(data);
-      final hasUpdate = isNewerVersion(release.version, kCurrentAppVersion);
+      final release = AppReleaseInfo.fromJson(
+        data,
+        osRelease: Platform.isLinux ? await _readOsRelease() : null,
+      );
+      final currentVersion = await _readCurrentVersion();
+      final hasUpdate = isNewerVersion(release.version, currentVersion);
 
       if (hasUpdate) {
         state = state.copyWith(

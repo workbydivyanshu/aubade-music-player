@@ -1,6 +1,38 @@
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 
+/// Linux package extensions in preference order for the distro described by
+/// the raw contents of `/etc/os-release`.
+///
+/// Fedora-family distros get RPM first, Debian/Ubuntu-family get DEB first,
+/// and unknown distros get AppImage only — it runs everywhere, so we never
+/// steer an unknown distro towards a foreign package format up front.
+List<String> preferAssetOrder(String? osRelease) {
+  final ids = <String>{};
+  for (final line in (osRelease ?? '').toLowerCase().split('\n')) {
+    final trimmed = line.trim();
+    if (!trimmed.startsWith('id=') && !trimmed.startsWith('id_like=')) {
+      continue;
+    }
+    final value = trimmed
+        .substring(trimmed.indexOf('=') + 1)
+        .replaceAll('"', '')
+        .replaceAll("'", '');
+    ids.addAll(value.split(RegExp(r'\s+')));
+  }
+
+  bool mentions(Set<String> family) =>
+      ids.any((id) => family.any(id.contains));
+
+  if (mentions(const {'fedora', 'rhel', 'centos', 'suse', 'rocky', 'alma'})) {
+    return const ['.rpm', '.appimage'];
+  }
+  if (mentions(const {'ubuntu', 'debian', 'mint', 'elementary', 'pop', 'bodhi'})) {
+    return const ['.deb', '.appimage'];
+  }
+  return const ['.appimage'];
+}
+
 /// Status of the in-app update lifecycle.
 enum UpdateStatus {
   idle,
@@ -37,7 +69,11 @@ class AppReleaseInfo {
     this.assetSizeBytes,
   });
 
-  factory AppReleaseInfo.fromJson(Map<String, dynamic> json, {TargetPlatform? platform}) {
+  factory AppReleaseInfo.fromJson(
+    Map<String, dynamic> json, {
+    TargetPlatform? platform,
+    String? osRelease,
+  }) {
     final tag = (json['tag_name'] as String? ?? '').trim();
     final cleanVer = tag.startsWith('v') ? tag.substring(1) : tag;
     final name = (json['name'] as String? ?? tag).trim();
@@ -65,32 +101,56 @@ class AppReleaseInfo {
     }
 
     final assets = json['assets'] as List<dynamic>? ?? const [];
-    for (final a in assets) {
-      if (a is! Map<String, dynamic>) continue;
-      final aName = (a['name'] as String? ?? '').toLowerCase();
-      final aUrl = a['browser_download_url'] as String? ?? '';
-      final aSize = a['size'] as int?;
-
-      if (isLinux) {
-        if (aName.endsWith('.rpm') || aName.endsWith('.appimage')) {
+    if (isLinux) {
+      // Walk the distro's preference order, so the first matching extension
+      // wins regardless of the order assets appear in the GitHub payload.
+      final preference = preferAssetOrder(osRelease);
+      for (final ext in preference) {
+        for (final a in assets) {
+          if (a is! Map<String, dynamic>) continue;
+          final aName = (a['name'] as String? ?? '').toLowerCase();
+          if (!aName.endsWith(ext)) continue;
           matchedAssetName = a['name'] as String?;
-          matchedAssetUrl = aUrl;
-          matchedSize = aSize;
-          if (aName.endsWith('.rpm')) break; // Prefer RPM on Fedora
-        }
-      } else if (isWindows) {
-        if (aName.endsWith('.exe')) {
-          matchedAssetName = a['name'] as String?;
-          matchedAssetUrl = aUrl;
-          matchedSize = aSize;
+          matchedAssetUrl = a['browser_download_url'] as String? ?? '';
+          matchedSize = a['size'] as int?;
           break;
         }
-      } else if (isMac) {
-        if (aName.endsWith('.dmg') || aName.endsWith('.zip')) {
+        if (matchedAssetName != null) break;
+      }
+      // Unknown distro: AppImage is universal, but if the release ships none,
+      // fall back to a native package rather than leaving no download at all.
+      if (matchedAssetName == null && preference.length == 1) {
+        for (final a in assets) {
+          if (a is! Map<String, dynamic>) continue;
+          final aName = (a['name'] as String? ?? '').toLowerCase();
+          if (!aName.endsWith('.rpm') && !aName.endsWith('.deb')) continue;
           matchedAssetName = a['name'] as String?;
-          matchedAssetUrl = aUrl;
-          matchedSize = aSize;
-          if (aName.endsWith('.dmg')) break; // Prefer DMG on macOS
+          matchedAssetUrl = a['browser_download_url'] as String? ?? '';
+          matchedSize = a['size'] as int?;
+          break;
+        }
+      }
+    } else {
+      for (final a in assets) {
+        if (a is! Map<String, dynamic>) continue;
+        final aName = (a['name'] as String? ?? '').toLowerCase();
+        final aUrl = a['browser_download_url'] as String? ?? '';
+        final aSize = a['size'] as int?;
+
+        if (isWindows) {
+          if (aName.endsWith('.exe')) {
+            matchedAssetName = a['name'] as String?;
+            matchedAssetUrl = aUrl;
+            matchedSize = aSize;
+            break;
+          }
+        } else if (isMac) {
+          if (aName.endsWith('.dmg') || aName.endsWith('.zip')) {
+            matchedAssetName = a['name'] as String?;
+            matchedAssetUrl = aUrl;
+            matchedSize = aSize;
+            if (aName.endsWith('.dmg')) break; // Prefer DMG on macOS
+          }
         }
       }
     }
