@@ -5,6 +5,7 @@ import 'package:window_manager/window_manager.dart';
 import '../../features/player/playback_service.dart';
 import '../components/artwork.dart';
 import '../components/buttons.dart' show LWTooltip;
+import '../components/marquee.dart';
 import '../theme/tokens.dart';
 import '../theme/wave_icons.dart';
 
@@ -107,11 +108,13 @@ class _WaveMiniPlayerState extends ConsumerState<WaveMiniPlayer> {
                           crossAxisAlignment:
                               CrossAxisAlignment.start,
                           children: [
-                            Text(current.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: WaveType.trackTitle
-                                    .copyWith(fontSize: 12.5)),
+                            WaveMarqueeText(
+                              current.title,
+                              key: ValueKey('mini-title-${current.queueKey}'),
+                              maxLines: 1,
+                              style: WaveType.trackTitle
+                                  .copyWith(fontSize: 12.5),
+                            ),
                             Text(current.artist,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,

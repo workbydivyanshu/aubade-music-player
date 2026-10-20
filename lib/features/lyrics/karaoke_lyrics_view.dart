@@ -133,6 +133,7 @@ class _WaveKaraokeLyricsViewState extends ConsumerState<WaveKaraokeLyricsView>
   bool _isPlaying = false;
   double _speed = 1.0;
   int _offsetMs = 0;
+  bool _reduceMotion = false;
   String? _currentTrackKey;
   LyricsResult? _currentResult;
   bool _lastTransliteration = true;
@@ -174,6 +175,15 @@ class _WaveKaraokeLyricsViewState extends ConsumerState<WaveKaraokeLyricsView>
       playbackServiceProvider.select((s) => s.speed),
       (_, _) => _syncPlaybackClock(),
     );
+    _syncPlaybackClock();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // J1: one reduced-motion gate. The OS flag can flip while mounted, so
+    // re-sync the clock here; `_syncPlaybackClock` owns start/stop.
+    _reduceMotion = WaveMotion.respectReduce(context);
     _syncPlaybackClock();
   }
 
@@ -243,7 +253,9 @@ class _WaveKaraokeLyricsViewState extends ConsumerState<WaveKaraokeLyricsView>
       final elapsed = DateTime.now().difference(_lastSyncTime).inMilliseconds;
       final predicted = _lastAudioMs + (elapsed * _speed).round();
       final drift = audioMs - predicted;
-      if (drift < -80 || drift > 80) {
+      if (_reduceMotion || drift < -80 || drift > 80) {
+        // Reduced motion has no interpolation ticker: follow the 10Hz
+        // snapshot directly (state, not decorative motion).
         _lastAudioMs = audioMs;
         _lastSyncTime = DateTime.now();
         final effectiveMs = audioMs - _offsetMs;
@@ -253,9 +265,9 @@ class _WaveKaraokeLyricsViewState extends ConsumerState<WaveKaraokeLyricsView>
       }
     }
 
-    if (_isPlaying && !_ticker.isActive) {
+    if (_isPlaying && !_reduceMotion && !_ticker.isActive) {
       _ticker.start();
-    } else if (!_isPlaying && _ticker.isActive) {
+    } else if ((!_isPlaying || _reduceMotion) && _ticker.isActive) {
       _ticker.stop();
     }
   }
@@ -551,7 +563,7 @@ class _WaveKaraokeLyricLineState extends State<WaveKaraokeLyricLine> {
   Widget build(BuildContext context) {
     final dark = waveIsDark(context);
     final accent = waveAccent(context);
-    final reduceMotion = MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    final reduceMotion = WaveMotion.respectReduce(context);
 
     final baseFontSize = widget.fontSize ?? (widget.compact ? 28.0 : 36.0);
 

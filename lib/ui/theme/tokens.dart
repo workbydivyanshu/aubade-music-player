@@ -214,7 +214,18 @@ class WaveType {
   );
 }
 
+/// Resolved motion stance for one frame.
+///
+/// Pure enum so the reduced-motion table can be unit-tested without a
+/// widget tree; widgets resolve through [WaveMotion.respectReduce].
+enum WaveMotionMode { full, reduced }
+
 /// Motion: fast 110ms, normal 180ms, slow 260ms, easeOutCubic standard.
+///
+/// One reduced-motion gate for the whole app (`MediaQuery.disableAnimations`,
+/// which the OS maps into on Windows/macOS/Linux): entrances, press scales,
+/// marquees and the 30Hz karaoke interpolation clock all consult
+/// [respectReduce]. Decorative motion stops; layout and state changes do not.
 class WaveMotion {
   WaveMotion._();
   static const fast = Duration(milliseconds: 110);
@@ -223,6 +234,51 @@ class WaveMotion {
 
   /// Standard easing for all hover / reveal / layout animation.
   static const Curve standard = Curves.easeOutCubic;
+
+  /// Pure mapping used by [respectReduce] and the motion tests.
+  static WaveMotionMode modeFor({required bool disableAnimations}) =>
+      disableAnimations ? WaveMotionMode.reduced : WaveMotionMode.full;
+
+  /// The single reduced-motion gate. True when the platform asks for
+  /// reduced motion (Flutter exposes the OS setting as
+  /// `MediaQueryData.disableAnimations`).
+  static bool respectReduce(BuildContext context) => modeFor(
+        disableAnimations:
+            MediaQuery.maybeOf(context)?.disableAnimations ?? false,
+      ) ==
+      WaveMotionMode.reduced;
+
+  /// Pure hover/press scale table. Reduced motion pins every control to
+  /// 1.0 so press feedback never bounces; full motion preserves the
+  /// shipped per-widget deltas.
+  static double interactionScale({
+    required WaveMotionMode mode,
+    required bool hovered,
+    required bool pressed,
+    double hoverScale = 1.05,
+    double pressScale = 0.95,
+  }) {
+    if (mode == WaveMotionMode.reduced) return 1.0;
+    if (pressed) return pressScale;
+    if (hovered) return hoverScale;
+    return 1.0;
+  }
+
+  /// Context convenience for the dock/glyph family.
+  static double interactionScaleFor(
+    BuildContext context, {
+    required bool hovered,
+    required bool pressed,
+    double hoverScale = 1.05,
+    double pressScale = 0.95,
+  }) =>
+      interactionScale(
+        mode: modeFor(disableAnimations: respectReduce(context)),
+        hovered: hovered,
+        pressed: pressed,
+        hoverScale: hoverScale,
+        pressScale: pressScale,
+      );
 }
 
 /// Hover / focus / cursor contract.

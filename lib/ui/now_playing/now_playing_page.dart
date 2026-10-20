@@ -17,6 +17,7 @@ import '../components/ambient.dart';
 import '../components/animated_artwork_video.dart';
 import '../components/artwork.dart';
 import '../components/buttons.dart' show LWTooltip;
+import '../components/marquee.dart';
 import '../components/states.dart';
 import '../queue/queue_panel.dart';
 import '../theme/haze.dart';
@@ -874,10 +875,10 @@ class _TrackMetadataSection extends ConsumerWidget {
       crossAxisAlignment:
           alignCenter ? CrossAxisAlignment.center : CrossAxisAlignment.start,
       children: [
-        Text(
+        WaveMarqueeText(
           track.title,
+          key: ValueKey('hero-title-${track.queueKey}'),
           maxLines: 2,
-          overflow: TextOverflow.ellipsis,
           textAlign: alignCenter ? TextAlign.center : TextAlign.start,
           style: WaveType.pageTitle.copyWith(
             fontSize: 26,

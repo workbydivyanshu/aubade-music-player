@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/audio/stream_models.dart';
@@ -120,14 +121,7 @@ class PlaylistRepository extends StateNotifier<List<SavedPlaylist>> {
     return state.firstWhere((p) => p.isLikedSongs);
   }
 
-  Set<String> likedKeys() {
-    final liked = state.where((p) => p.isLikedSongs);
-    if (liked.isEmpty) return const {};
-    return liked.first.tracks
-        .map((t) =>
-            '${t.name.toLowerCase()}|${t.artist.toLowerCase()}')
-        .toSet();
-  }
+  Set<String> likedKeys() => likedKeysFor(state);
 
   Future<SavedPlaylist> createCustom(String title) async {
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -213,3 +207,34 @@ final playlistRepositoryProvider =
         (ref) {
   return PlaylistRepository(ref.watch(databaseProvider));
 });
+
+/// Lowercase `name|artist` keys for the liked playlist. Pure so the O(1)
+/// dock lookup and the repository share one definition.
+Set<String> likedKeysFor(Iterable<SavedPlaylist> playlists) {
+  final liked = playlists.where((p) => p.isLikedSongs);
+  if (liked.isEmpty) return const <String>{};
+  return liked.first.tracks
+      .map((t) => '${t.name.toLowerCase()}|${t.artist.toLowerCase()}')
+      .toSet();
+}
+
+/// One lowercase `name|artist` set for the liked playlist, shared by every
+/// heart on screen.
+///
+/// [PlaylistRepository] is a [StateNotifier] whose state list is replaced on
+/// each mutation, so `ref.watch(playlistRepositoryProvider)` alone rebuilds
+/// the dock on renames/reorders too. This notifier keeps the derived set
+/// stable via [setEquals] — listeners only rebuild when a like/unlike
+/// actually flips a key, turning the dock's O(all liked tracks) scan into an
+/// O(1) `contains`.
+class LikedKeysNotifier extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => likedKeysFor(ref.watch(playlistRepositoryProvider));
+
+  @override
+  bool updateShouldNotify(Set<String> previous, Set<String> next) =>
+      !setEquals(previous, next);
+}
+
+final likedKeysSetProvider =
+    NotifierProvider<LikedKeysNotifier, Set<String>>(LikedKeysNotifier.new);

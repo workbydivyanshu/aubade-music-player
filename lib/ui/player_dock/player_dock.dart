@@ -22,6 +22,8 @@ import '../../features/settings/theme_controller.dart';
 import '../components/ambient.dart';
 import '../components/artwork.dart';
 import '../components/buttons.dart' show LWTooltip, LWVolumeSlider;
+import '../components/focus_glyph.dart';
+import '../components/marquee.dart';
 import '../components/menus.dart';
 import '../theme/haze.dart' show WaveHazeScope;
 import '../theme/tokens.dart';
@@ -267,10 +269,11 @@ class WavePlayerDock extends ConsumerWidget {
                                         crossAxisAlignment:
                                             CrossAxisAlignment.start,
                                         children: [
-                                          Text(
+                                          WaveMarqueeText(
                                             current.title,
+                                            key: ValueKey(
+                                                'dock-title-${current.queueKey}'),
                                             maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
                                             style:
                                                 WaveType.trackTitle.copyWith(
                                               fontSize: 13.5,
@@ -805,6 +808,15 @@ class _GlyphState extends State<_Glyph> {
     final dark = waveIsDark(context);
     final accent = waveAccent(context);
     final disabled = widget.onTap == null && widget.menuItems == null;
+    // B9 scale family, reduced-motion aware: one table (1.10 hover /
+    // 0.90 press) instead of per-widget magic numbers.
+    final scale = WaveMotion.interactionScaleFor(
+      context,
+      hovered: _hover,
+      pressed: _pressed,
+      hoverScale: 1.10,
+      pressScale: 0.90,
+    );
     final color = widget.active
         ? accent
         : disabled
@@ -817,29 +829,33 @@ class _GlyphState extends State<_Glyph> {
                 : (dark
                     ? WaveColors.textSecondary
                     : WaveColors.lightTextSecondary);
-    Widget glyph = MouseRegion(
-      cursor: disabled ? SystemMouseCursors.basic : SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() {
-        _hover = false;
-        _pressed = false;
-      }),
-      child: GestureDetector(
-        onTapDown: disabled ? null : (_) => setState(() => _pressed = true),
-        onTapUp: disabled ? null : (_) => setState(() => _pressed = false),
-        onTapCancel: disabled ? null : () => setState(() => _pressed = false),
-        onTap: widget.onTap,
-        child: AnimatedScale(
-          scale: _pressed ? 0.90 : (_hover ? 1.10 : 1.0),
-          duration: WaveMotion.fast,
-          curve: Curves.easeOutCubic,
-          child: Container(
-            width: 34,
-            height: 34,
-            color: Colors.transparent,
-            // Transport icons 18px, utility glyphs 15px (canonical).
-            child: Icon(widget.icon,
-                size: widget.large ? 18 : 15, color: color),
+    Widget glyph = FocusGlyph(
+      enabled: !disabled,
+      onActivate: widget.onTap,
+      child: MouseRegion(
+        cursor: disabled ? SystemMouseCursors.basic : SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() {
+          _hover = false;
+          _pressed = false;
+        }),
+        child: GestureDetector(
+          onTapDown: disabled ? null : (_) => setState(() => _pressed = true),
+          onTapUp: disabled ? null : (_) => setState(() => _pressed = false),
+          onTapCancel: disabled ? null : () => setState(() => _pressed = false),
+          onTap: widget.onTap,
+          child: AnimatedScale(
+            scale: scale,
+            duration: WaveMotion.fast,
+            curve: Curves.easeOutCubic,
+            child: Container(
+              width: 34,
+              height: 34,
+              color: Colors.transparent,
+              // Transport icons 18px, utility glyphs 15px (canonical).
+              child: Icon(widget.icon,
+                  size: widget.large ? 18 : 15, color: color),
+            ),
           ),
         ),
       ),
@@ -848,27 +864,30 @@ class _GlyphState extends State<_Glyph> {
       glyph = WaveMenuButton(
         entries: widget.menuItems!,
         placement: FlyoutPlacementMode.topRight,
-        buttonBuilder: (context, onOpen) => MouseRegion(
-          cursor: SystemMouseCursors.click,
-          onEnter: (_) => setState(() => _hover = true),
-          onExit: (_) => setState(() {
-            _hover = false;
-            _pressed = false;
-          }),
-          child: GestureDetector(
-            onTapDown: (_) => setState(() => _pressed = true),
-            onTapUp: (_) => setState(() => _pressed = false),
-            onTapCancel: () => setState(() => _pressed = false),
-            onTap: onOpen,
-            child: AnimatedScale(
-              scale: _pressed ? 0.90 : (_hover ? 1.10 : 1.0),
-              duration: WaveMotion.fast,
-              curve: Curves.easeOutCubic,
-              child: Container(
-                width: 34,
-                height: 34,
-                color: Colors.transparent,
-                child: Icon(widget.icon, size: 15, color: color),
+        buttonBuilder: (context, onOpen) => FocusGlyph(
+          onActivate: onOpen,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            onEnter: (_) => setState(() => _hover = true),
+            onExit: (_) => setState(() {
+              _hover = false;
+              _pressed = false;
+            }),
+            child: GestureDetector(
+              onTapDown: (_) => setState(() => _pressed = true),
+              onTapUp: (_) => setState(() => _pressed = false),
+              onTapCancel: () => setState(() => _pressed = false),
+              onTap: onOpen,
+              child: AnimatedScale(
+                scale: scale,
+                duration: WaveMotion.fast,
+                curve: Curves.easeOutCubic,
+                child: Container(
+                  width: 34,
+                  height: 34,
+                  color: Colors.transparent,
+                  child: Icon(widget.icon, size: 15, color: color),
+                ),
               ),
             ),
           ),
@@ -964,7 +983,13 @@ class _PlayGlyphState extends State<_PlayGlyph> {
                 setState(() => _pressed = false),
             onTap: widget.enabled ? widget.onTap : null,
             child: AnimatedScale(
-              scale: _pressed ? 0.92 : (_hover ? 1.06 : 1.0),
+              scale: WaveMotion.interactionScaleFor(
+                context,
+                hovered: _hover,
+                pressed: _pressed,
+                hoverScale: 1.06,
+                pressScale: 0.92,
+              ),
               duration: WaveMotion.fast,
               curve: Curves.easeOutCubic,
               child: AnimatedContainer(
@@ -1270,15 +1295,27 @@ class _WavySeekTrackState extends State<_WavySeekTrack>
       vsync: this,
       duration: const Duration(milliseconds: 1500),
     );
-    if (widget.playing) _phase.repeat();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncPhase();
   }
 
   @override
   void didUpdateWidget(covariant _WavySeekTrack old) {
     super.didUpdateWidget(old);
-    if (widget.playing && !_phase.isAnimating) {
+    _syncPhase();
+  }
+
+  void _syncPhase() {
+    final run = widget.playing && !WaveMotion.respectReduce(context);
+    if (run && !_phase.isAnimating) {
       _phase.repeat();
-    } else if (!widget.playing && _phase.isAnimating) {
+    } else if (!run && _phase.isAnimating) {
+      // Leave the phase where it stopped: it is a static decoration when
+      // paused/reduced, and resuming continues smoothly.
       _phase.stop();
     }
   }
@@ -1438,16 +1475,14 @@ class _LikeGlyphState extends ConsumerState<_LikeGlyph>
   }
 
   Future<void> _onToggle() async {
-    final liked = ref
-        .read(playlistRepositoryProvider.notifier)
-        .likedKeys()
-        .contains(widget.track.queueKey);
+    final liked =
+        ref.read(likedKeysSetProvider).contains(widget.track.queueKey);
     // Pop only on like: 1.0 → 1.25 eased out, then settle to 1.0 with a
     // slight overshoot bounce. (Previously `forward(from: 0.8)` ran the
     // grow phase linear to the 1.25 bound — a visible jump — and the pop
     // fired on unlike too.) Settle is mounted-guarded so a track change
     // mid-pop can't drive a disposed controller.
-    if (!liked) {
+    if (!liked && !WaveMotion.respectReduce(context)) {
       _anim
           .animateTo(1.25,
               duration: const Duration(milliseconds: 110),
@@ -1479,14 +1514,10 @@ class _LikeGlyphState extends ConsumerState<_LikeGlyph>
 
   @override
   Widget build(BuildContext context) {
-    // Watch the playlist STATE (not the notifier — its identity never
-    // changes, so watching it never rebuilds and the glyph sticks).
-    final liked = ref
-        .watch(playlistRepositoryProvider)
-        .where((p) => p.isLikedSongs)
-        .expand((p) => p.tracks)
-        .map((t) => '${t.name.toLowerCase()}|${t.artist.toLowerCase()}')
-        .contains(widget.track.queueKey);
+    // Watch the derived key set, not the playlist list: the notifier's
+    // `updateShouldNotify` compares with setEquals, so this rebuilds only
+    // when a like/unlike flips a key — not on rename/reorder/refresh.
+    final liked = ref.watch(likedKeysSetProvider).contains(widget.track.queueKey);
     return ScaleTransition(
       scale: _anim,
       child: _Glyph(
