@@ -450,41 +450,51 @@ jobs:
 
       - name: Patch audiotags macOS
         run: |
-          for dir in "$HOME"/.pub-cache/hosted/pub.dev/audiotags-*; do
-            if [ -d "$dir/macos" ]; then
-              echo "Patching audiotags in $dir"
-              rm -f "$dir/macos/Classes/bridge_generated.h"
-              rm -f "$dir/macos/Runner/bridge_generated.h"
-              cat << 'EOF' > "$dir/macos/Classes/AudiotagsPlugin.swift"
-import Cocoa
-import FlutterMacOS
+          python3 - << 'PYEOF'
+          import glob, os, urllib.request, zipfile
 
-public class AudiotagsPlugin: NSObject, FlutterPlugin {
-  public static func register(with registrar: FlutterPluginRegistrar) {
-    let channel = FlutterMethodChannel(name: "audiotags", binaryMessenger: registrar.messenger)
-    let instance = AudiotagsPlugin()
-    registrar.addMethodCallDelegate(instance, channel: channel)
-  }
+          for dir in glob.glob(os.path.expanduser('~/.pub-cache/hosted/pub.dev/audiotags-*')):
+              mac_classes = os.path.join(dir, 'macos', 'Classes')
+              mac_runner = os.path.join(dir, 'macos', 'Runner')
+              if os.path.isdir(mac_classes):
+                  print(f"Patching audiotags in {dir}")
+                  for h in [os.path.join(mac_classes, 'bridge_generated.h'), os.path.join(mac_runner, 'bridge_generated.h')]:
+                      if os.path.exists(h):
+                          os.remove(h)
+                  swift_code = (
+                      "import Cocoa\n"
+                      "import FlutterMacOS\n\n"
+                      "public class AudiotagsPlugin: NSObject, FlutterPlugin {\n"
+                      "  public static func register(with registrar: FlutterPluginRegistrar) {\n"
+                      "    let channel = FlutterMethodChannel(name: \"audiotags\", binaryMessenger: registrar.messenger)\n"
+                      "    let instance = AudiotagsPlugin()\n"
+                      "    registrar.addMethodCallDelegate(instance, channel: channel)\n"
+                      "  }\n\n"
+                      "  public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {\n"
+                      "    switch call.method {\n"
+                      "    case \"getPlatformVersion\":\n"
+                      "      result(\"macOS \" + ProcessInfo.processInfo.operatingSystemVersionString)\n"
+                      "    default:\n"
+                      "      result(FlutterMethodNotImplemented)\n"
+                      "    }\n"
+                      "  }\n"
+                      "}\n"
+                  )
+                  with open(os.path.join(mac_classes, 'AudiotagsPlugin.swift'), 'w') as f:
+                      f.write(swift_code)
 
-  public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    switch call.method {
-    case "getPlatformVersion":
-      result("macOS " + ProcessInfo.processInfo.operatingSystemVersionString)
-    default:
-      result(FlutterMethodNotImplemented)
-    }
-  }
-}
-EOF
-              mkdir -p "$dir/macos/Libs"
-              if [ ! -f "$dir/macos/Libs/libaudiotags.a" ]; then
-                echo "Pre-fetching libaudiotags.a for macOS..."
-                curl -sL https://github.com/erikas-taroza/audiotags/releases/download/v1.4.5/macos.zip -o "$dir/macos/Libs/macos.zip"
-                unzip -o "$dir/macos/Libs/macos.zip" -d "$dir/macos/Libs"
-                rm -f "$dir/macos/Libs/macos.zip"
-              fi
-            fi
-          done
+                  libs_dir = os.path.join(dir, 'macos', 'Libs')
+                  os.makedirs(libs_dir, exist_ok=True)
+                  lib_a = os.path.join(libs_dir, 'libaudiotags.a')
+                  if not os.path.exists(lib_a):
+                      print("Pre-fetching libaudiotags.a for macOS...")
+                      zip_path = os.path.join(libs_dir, 'macos.zip')
+                      urllib.request.urlretrieve('https://github.com/erikas-taroza/audiotags/releases/download/v1.4.5/macos.zip', zip_path)
+                      with zipfile.ZipFile(zip_path, 'r') as z:
+                          z.extractall(libs_dir)
+                      if os.path.exists(zip_path):
+                          os.remove(zip_path)
+          PYEOF
 
       - name: Build macOS app
         run: flutter build macos --release
