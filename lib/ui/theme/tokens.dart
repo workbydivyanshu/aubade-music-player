@@ -8,7 +8,7 @@ export 'wave_surface_scope.dart';
 ///
 /// `lib/ui/theme/tokens.dart` is the single source of truth for the
 /// Aubade "Wave" design system. The deprecated `LwColors` alias lives in
-/// `lib/design_system/fluent/lw_colors.dart` (one definition, merged from
+/// `lib/design_system/fluent/aubade_colors.dart` (one definition, merged from
 /// the retired `lib/design_system/tokens.dart` copy); new code must not
 /// import it.
 ///

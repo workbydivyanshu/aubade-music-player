@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
 // [LwColors] now has a single definition in
-// `lib/design_system/fluent/lw_colors.dart` (the Fluent alias palette).
+// `lib/design_system/fluent/aubade_colors.dart` (the Fluent alias palette).
 // Re-exported here so existing frozen-kit imports keep resolving.
-export 'fluent/lw_colors.dart' show LwColors;
+export 'fluent/aubade_colors.dart' show LwColors;
 
 /// Aubade editorial design tokens — single source of spacing, radius,
 /// type, motion, density and breakpoint values.

@@ -18,7 +18,7 @@ import '../../../ui/theme/tokens.dart';
 /// - surfaceLayer1/2  → content layering (cards stay flat, layers differ)
 /// - surfaceMica      → native Mica base (window.dart paints this)
 /// - surfaceAcrylic   → title chrome / suggestion flyout base
-/// - surfaceHaze      → Haze Level 1/2 tonal wash (see lw_materials.dart)
+/// - surfaceHaze      → Haze Level 1/2 tonal wash (see aubade_materials.dart)
 /// - surfaceElevated  → player dock / raised controls
 /// - surfaceFlyout    → MenuFlyout / ContentDialog / popover (Haze L3)
 /// - surfacePlayer    → persistent player dock (Haze L1 + hairline)

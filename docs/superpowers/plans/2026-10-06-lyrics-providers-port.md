@@ -63,8 +63,8 @@
 - Test: `test/lyrics_provider_pref_test.dart`
 
 **Interfaces:**
-- Consumes: `Prefs` SharedPreferences pattern (`lw_word_by_word`).
-- Produces: `enum LyricsProviderId { auto, lrcRed, appleMusic, betterLyrics, kugou, simpMusic, musixmatch, lrclib }` with `id`, `title`, `subtitle`, `isWordProvider`, `fromId()` (AUTO fallback); `Prefs.lyricsProviderId` (`lw_lyrics_provider`, default `'auto'`).
+- Consumes: `Prefs` SharedPreferences pattern (`aubade_word_by_word`).
+- Produces: `enum LyricsProviderId { auto, lrcRed, appleMusic, betterLyrics, kugou, simpMusic, musixmatch, lrclib }` with `id`, `title`, `subtitle`, `isWordProvider`, `fromId()` (AUTO fallback); `Prefs.lyricsProviderId` (`aubade_lyrics_provider`, default `'auto'`).
 
 Titles/subtitles (match native, `Lrc.Red` replaces LastWave slot): auto `Auto` / `Fastest word-sync wins, LRCLIB fallback`; lrcRed `Lrc.Red` / `Recording-matched word-sync first`; appleMusic `Apple Music` / `Syllable-synced Apple Music lyrics first`; betterLyrics `BetterLyrics` / `Word-synced lyrics first`; kugou `Kugou` / `KRC word-synced lyrics first`; simpMusic `Video-Match` / `Matched on the playing video first`; musixmatch `Catalog` / `Largest catalogue line-sync first`; lrclib `LRCLIB` / `Line-synced community lyrics first`.
 

@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/window_lifecycle.dart';
-import '../../design_system/fluent/lw_viewport.dart';
+import '../../design_system/fluent/aubade_viewport.dart';
 import '../../features/player/playback_service.dart';
 import '../components/artwork.dart';
 import '../components/buttons.dart' show LWTooltip;

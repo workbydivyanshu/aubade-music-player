@@ -78,7 +78,7 @@ endpoint accepts exclusive 32-bit PCM or float.
 
 - `lib/features/player/playback_service.dart` — `configureWasapi`, hardware-volume lock, live `audioParams`
 - `lib/features/player/player_state.dart` — `outputFormat`
-- `lib/core/storage/prefs.dart` — `lw_bit_perfect`, `lw_audio_device_id`, `lw_wasapi_exclusive`
+- `lib/core/storage/prefs.dart` — `aubade_bit_perfect`, `aubade_audio_device_id`, `aubade_wasapi_exclusive` (pre-rebrand `lw_*` keys are migrated on first read; see `Prefs.migrateLegacyKeys`)
 - `lib/features/settings/app.dart` — `audioOutputProvider.attach()` after player warm-start
 - `lib/ui/settings/settings_page.dart` — Audio output device / exclusive / bit-perfect / stream path
 - `lib/ui/player_dock/player_dock.dart` — quality flyout + device picker + volume routing

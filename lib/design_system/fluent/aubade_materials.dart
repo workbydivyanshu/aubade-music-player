@@ -3,7 +3,7 @@ import 'dart:ui';
 import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../../ui/theme/tokens.dart';
-import 'lw_colors.dart';
+import 'aubade_colors.dart';
 
 /// Haze material system — depth without blur soup.
 ///

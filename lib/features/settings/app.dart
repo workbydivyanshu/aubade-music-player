@@ -9,7 +9,7 @@ import '../../app/window.dart';
 import '../../app/window_lifecycle.dart';
 import '../../app/auth_gate.dart';
 import '../../core/network/network_monitor.dart';
-import '../../design_system/fluent/lw_scrollbar.dart';
+import '../../design_system/fluent/aubade_scrollbar.dart';
 import '../../features/lastfm/auth_repository.dart';
 import '../../features/lastfm/scrobble_repository.dart';
 import '../../ui/theme/fluent_theme.dart';
