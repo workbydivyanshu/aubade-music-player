@@ -58,10 +58,11 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      # - name: Run analyzer & tests
-      #   run: |
-      #     flutter analyze --no-fatal-infos
-      #     flutter test
+      - name: Run analyzer
+        run: flutter analyze --no-fatal-infos
+
+      - name: Run tests
+        run: flutter test --fail-fast
 
       - name: Build Linux app
         run: flutter build linux --release
