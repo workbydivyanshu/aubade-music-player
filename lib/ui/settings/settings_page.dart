@@ -21,6 +21,7 @@ import '../../features/lyrics/lyrics_providers.dart';
 import '../../features/player/playback_service.dart';
 import '../theme/tokens.dart';
 import '../components/ambient.dart' show ambientGlowEnabledProvider;
+import '../components/glass_panel.dart';
 import '../../features/presence/discord_presence_service.dart';
 import '../../features/updater/update_models.dart';
 import '../../features/updater/update_service.dart';
@@ -271,13 +272,13 @@ class _Group extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Container(
+        GlassPanel(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
-          decoration: BoxDecoration(
-            color: theme.resources.cardBackgroundFillColorDefault,
-            border: Border.all(color: stroke),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
-          ),
+          tint: waveAmoled(context)
+              ? Colors.black
+              : theme.resources.cardBackgroundFillColorDefault,
+          border: Border.all(color: stroke),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -292,11 +293,13 @@ class _Group extends StatelessWidget {
             ],
           ),
         ),
-        Container(
+        SizedBox(
           width: double.infinity,
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: theme.resources.cardBackgroundFillColorSecondary,
+          child: GlassPanel(
+            padding: const EdgeInsets.all(16),
+            tint: waveAmoled(context)
+                ? Colors.black
+                : theme.resources.cardBackgroundFillColorSecondary,
             border: Border(
               left: BorderSide(color: stroke),
               right: BorderSide(color: stroke),
@@ -305,8 +308,8 @@ class _Group extends StatelessWidget {
             borderRadius: const BorderRadius.vertical(
               bottom: Radius.circular(6),
             ),
+            child: child,
           ),
-          child: child,
         ),
       ],
     );
@@ -647,7 +650,6 @@ class _Appearance extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final prefs = ref.watch(prefsProvider);
     final theme = ref.watch(themeControllerProvider);
     return Column(
       children: [
@@ -679,7 +681,8 @@ class _Appearance extends ConsumerWidget {
                         await ref
                             .read(themeControllerProvider.notifier)
                             .setThemeMode(true);
-                        await applyWindowMaterial(isLight: true);
+                        await applyWindowMaterial(
+                            isLight: !theme.amoled);
                       },
                       child: const Text('Pearl'),
                     ),
@@ -702,7 +705,13 @@ class _Appearance extends ConsumerWidget {
                 ],
                 onChanged: (v) {
                   if (v != null) {
-                    onUpdate((p) => p.setAccentSource(v));
+                    onUpdate((p) async {
+                      await p.setAccentSource(v);
+                      // Keep the artwork toggle and the source dropdown
+                      // describing the same truth: choosing "Artwork tint"
+                      // is the dynamic-artwork mode.
+                      await p.setDynamicNowPlaying(v == 'artwork');
+                    });
                   }
                 },
               ),
@@ -804,15 +813,26 @@ class _Appearance extends ConsumerWidget {
           child: Column(
             children: [
               _SwitchRow(
-                value: prefs.amoled,
+                value: theme.amoled,
                 onChanged: (v) => onUpdate((p) => p.setAmoled(v)),
                 title: 'AMOLED black',
+                subtitle: 'True black surfaces in Pearl and Midnight',
               ),
               _SwitchRow(
-                value: prefs.dynamicNowPlaying,
-                onChanged: (v) => onUpdate((p) => p.setDynamicNowPlaying(v)),
+                value: theme.dynamicArtwork,
+                onChanged: (v) => onUpdate((p) async {
+                  await p.setDynamicNowPlaying(v);
+                  // Mirror the source so ON means artwork and OFF returns
+                  // to the user's swatch instead of leaving a hidden
+                  // artwork source in force.
+                  if (v) {
+                    await p.setAccentSource('artwork');
+                  } else if (p.accentSource == 'artwork') {
+                    await p.setAccentSource('custom');
+                  }
+                }),
                 title: 'Dynamic artwork theme',
-                subtitle: 'Tint Now Playing from album art',
+                subtitle: 'Derive the app accent from the current cover',
               ),
               // Pillar 2 shell glow. Notifier-backed on purpose: the same
               // provider the shell watches is the single live source (it
@@ -1857,20 +1877,20 @@ class _Experimental extends ConsumerWidget {
   const _Experimental({required this.onUpdate});
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final prefs = ref.watch(prefsProvider);
+    final theme = ref.watch(themeControllerProvider);
     return _Group(
       title: 'Experimental',
       subtitle: 'Opt-in desktop prototypes',
       child: Column(
         children: [
           _SwitchRow(
-            value: prefs.liquidGlass,
+            value: theme.liquidGlass,
             onChanged: (v) => onUpdate((p) => p.setLiquidGlass(v)),
             title: 'Extra translucency',
             subtitle: 'Stronger Haze on panels (may cost FPS)',
           ),
           _SwitchRow(
-            value: prefs.wavySeekbar,
+            value: theme.wavySeekbar,
             onChanged: (v) => onUpdate((p) => p.setWavySeekbar(v)),
             title: 'Wavy seekbar',
             subtitle: 'Experimental timeline treatment',

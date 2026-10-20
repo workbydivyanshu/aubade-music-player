@@ -685,7 +685,7 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
                   filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color: _sheetColor,
+                      color: waveAmoled(context) ? Colors.black : _sheetColor,
                       border: _spotlightRim(),
                     ),
                     child: Column(

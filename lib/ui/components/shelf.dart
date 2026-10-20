@@ -521,9 +521,7 @@ class _WaveQuickTileState extends ConsumerState<WaveQuickTile> {
                   : _hover
                       ? (dark ? Colors.white : Colors.black)
                           .withValues(alpha: WaveState.hoverAlpha)
-                      : (dark
-                          ? WaveColors.surface
-                          : WaveColors.lightSurface),
+                      : waveSurface(context),
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
                 color: widget.playing

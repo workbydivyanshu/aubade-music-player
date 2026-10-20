@@ -49,9 +49,8 @@ class WaveTitleBar extends ConsumerWidget {
     final auth = ref.watch(authRepositoryProvider);
     return WaveHaze(
       level: LwHazeLevel.l1,
-      base: dark
-          ? WaveColors.background.withValues(alpha: 0.85)
-          : WaveColors.lightBackground.withValues(alpha: 0.9),
+      base: waveBackground(context)
+          .withValues(alpha: dark ? 0.85 : 0.9),
       border: Border(
         bottom: BorderSide(color: waveDivider(context)),
       ),
@@ -131,9 +130,11 @@ class WaveTitleBar extends ConsumerWidget {
                       height: 26,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: dark
-                            ? WaveColors.surfaceRaised
-                            : WaveColors.lightOverlay,
+                        color: waveAmoled(context)
+                            ? Colors.black
+                            : (dark
+                                ? WaveColors.surfaceRaised
+                                : WaveColors.lightOverlay),
                         border:
                             Border.all(color: waveDivider(context)),
                       ),

@@ -112,6 +112,20 @@ class WaveHaze extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final amoled = waveAmoled(context);
+    // AMOLED: fully opaque true black — no artwork wash, no translucency,
+    // no blur cost. Border/shadow/radius stay exactly as designed.
+    if (amoled) {
+      return Container(
+        decoration: BoxDecoration(
+          color: Colors.black,
+          borderRadius: borderRadius,
+          border: border,
+          boxShadow: shadow,
+        ),
+        child: child,
+      );
+    }
     return LwHaze(
       level: level,
       base: base,
@@ -153,12 +167,24 @@ class WaveGlass extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dark = waveIsDark(context);
+    final amoled = waveAmoled(context);
+    final liquid = WaveSurfaceScope.liquidGlassOf(context);
     final reduceT = MediaQuery.maybeOf(context)?.highContrast ?? false;
     final blurOn = blur && WaveHazeScope.blurEnabled(context) && !reduceT;
-    final fill = (dark ? const Color(0xFF121212) : const Color(0xFFF4F4F4))
-        .withValues(alpha: blurOn ? 0.46 : 0.78);
-    final edge = (dark ? Colors.white : Colors.black)
-        .withValues(alpha: dark ? 0.16 : 0.10);
+    // Extra translucency: same geometry, stronger frost (lower fill
+    // alpha, larger sigma). OFF is byte-identical to the original render.
+    final fillBase = amoled
+        ? Colors.black
+        : (dark ? const Color(0xFF121212) : const Color(0xFFF4F4F4));
+    final fill = fillBase.withValues(
+      alpha: amoled
+          ? 1.0
+          : (liquid
+              ? (blurOn ? 0.30 : 0.62)
+              : (blurOn ? 0.46 : 0.78)),
+    );
+    final edge = (amoled || dark ? Colors.white : Colors.black)
+        .withValues(alpha: amoled ? 0.10 : (dark ? 0.16 : 0.10));
 
     final content = Container(
       padding: padding,
@@ -171,13 +197,11 @@ class WaveGlass extends StatelessWidget {
     );
 
     if (!blurOn) return content;
+    final sigma = (liquid ? 26.0 : 18.0) * WaveHazeScope.blurScale(context);
     return ClipRRect(
       borderRadius: borderRadius,
       child: BackdropFilter(
-        filter: ImageFilter.blur(
-          sigmaX: 18 * WaveHazeScope.blurScale(context),
-          sigmaY: 18 * WaveHazeScope.blurScale(context),
-        ),
+        filter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
         child: content,
       ),
     );

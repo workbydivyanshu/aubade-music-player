@@ -168,9 +168,7 @@ class _ArtistCellState extends State<_ArtistCell> {
                           const EdgeInsets.symmetric(
                               horizontal: 7, vertical: 2),
                       decoration: BoxDecoration(
-                        color: dark
-                            ? WaveColors.surfaceRaised
-                            : WaveColors.lightSurface,
+                        color: waveSurfaceRaised(context),
                         borderRadius:
                             BorderRadius.circular(999),
                         border: Border.all(

@@ -73,12 +73,13 @@ const _waveTooltipTheme = TooltipThemeData(
 FluentThemeData buildWaveFluentTheme({
   required Color accent,
   required bool isLight,
+  bool amoled = false,
 }) {
   final safeAccent =
       accent.a == 0 ? WaveColors.defaultAccent : accent;
   final accentColor = _accentFrom(safeAccent);
   final buttonTheme = _waveButtonTheme();
-  if (isLight) {
+  if (isLight && !amoled) {
     return FluentThemeData(
       brightness: Brightness.light,
       accentColor: accentColor,
@@ -102,11 +103,14 @@ FluentThemeData buildWaveFluentTheme({
   return FluentThemeData(
     brightness: Brightness.dark,
     accentColor: accentColor,
-    scaffoldBackgroundColor: WaveColors.background,
-    micaBackgroundColor: WaveColors.background,
-    acrylicBackgroundColor: WaveColors.panelTranslucent,
-    cardColor: WaveColors.surface,
-    menuColor: WaveColors.surfaceRaised,
+    scaffoldBackgroundColor:
+        WaveSurfaces.background(isDark: true, amoled: amoled),
+    micaBackgroundColor:
+        WaveSurfaces.background(isDark: true, amoled: amoled),
+    acrylicBackgroundColor:
+        WaveSurfaces.panel(isDark: true, amoled: amoled),
+    cardColor: WaveSurfaces.surface(isDark: true, amoled: amoled),
+    menuColor: WaveSurfaces.surfaceRaised(isDark: true, amoled: amoled),
     activeColor: WaveColors.textPrimary,
     inactiveColor: WaveColors.textSecondary,
     selectionColor: safeAccent.withValues(alpha: 0.3),
@@ -115,7 +119,9 @@ FluentThemeData buildWaveFluentTheme({
       glowFactor: 2.0,
     ),
     buttonTheme: buttonTheme,
-    dialogTheme: _waveDialogTheme(surface: WaveColors.surfaceRaised),
+    dialogTheme: _waveDialogTheme(
+      surface: WaveSurfaces.surfaceRaised(isDark: true, amoled: amoled),
+    ),
     tooltipTheme: _waveTooltipTheme,
   );
 }

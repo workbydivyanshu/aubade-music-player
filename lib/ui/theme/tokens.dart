@@ -1,5 +1,9 @@
 import 'package:fluent_ui/fluent_ui.dart';
 
+import 'wave_surface_scope.dart';
+
+export 'wave_surface_scope.dart';
+
 /// CANONICAL — all agents must import this, do NOT use LwColors/LwRadius.
 ///
 /// `lib/ui/theme/tokens.dart` is the single source of truth for the
@@ -261,6 +265,60 @@ WaveBreakpoint waveBreakpointFor(double width) {
 bool waveIsDark(BuildContext context) =>
     FluentTheme.of(context).brightness == Brightness.dark;
 
+/// Pure surface mapping shared by the theme builder and every surface
+/// helper. AMOLED wins over the Pearl/Midnight decision: when it is on
+/// the whole app is deep dark and every base surface is opaque black.
+class WaveSurfaces {
+  WaveSurfaces._();
+
+  static Color background({required bool isDark, required bool amoled}) =>
+      amoled
+          ? Colors.black
+          : (isDark ? WaveColors.background : WaveColors.lightBackground);
+
+  static Color surface({required bool isDark, required bool amoled}) =>
+      amoled
+          ? Colors.black
+          : (isDark ? WaveColors.surface : WaveColors.lightSurface);
+
+  static Color surfaceRaised({required bool isDark, required bool amoled}) =>
+      amoled
+          ? Colors.black
+          : (isDark ? WaveColors.surfaceRaised : WaveColors.lightSurfaceRaised);
+
+  static Color surfaceOverlay({required bool isDark, required bool amoled}) =>
+      amoled
+          ? Colors.black
+          : (isDark ? WaveColors.surfaceOverlay : WaveColors.lightOverlay);
+
+  static Color panel({required bool isDark, required bool amoled}) =>
+      amoled
+          ? Colors.black
+          : (isDark ? WaveColors.panelTranslucent : WaveColors.lightSurface);
+}
+
+bool waveAmoled(BuildContext context) => WaveSurfaceScope.amoledOf(context);
+
+Color waveBackground(BuildContext context) => WaveSurfaces.background(
+      isDark: waveIsDark(context),
+      amoled: waveAmoled(context),
+    );
+
+Color waveSurface(BuildContext context) => WaveSurfaces.surface(
+      isDark: waveIsDark(context),
+      amoled: waveAmoled(context),
+    );
+
+Color waveSurfaceRaised(BuildContext context) => WaveSurfaces.surfaceRaised(
+      isDark: waveIsDark(context),
+      amoled: waveAmoled(context),
+    );
+
+Color waveSurfaceOverlay(BuildContext context) => WaveSurfaces.surfaceOverlay(
+      isDark: waveIsDark(context),
+      amoled: waveAmoled(context),
+    );
+
 Color waveAccent(BuildContext context) =>
     FluentTheme.of(context).accentColor.normal;
 
@@ -275,9 +333,6 @@ Color waveTextSecondary(BuildContext context) => waveIsDark(context)
 Color waveTextTertiary(BuildContext context) => waveIsDark(context)
     ? WaveColors.textTertiary
     : WaveColors.lightTextTertiary;
-
-Color waveSurface(BuildContext context) =>
-    waveIsDark(context) ? WaveColors.surface : WaveColors.lightSurface;
 
 Color waveDivider(BuildContext context) => waveIsDark(context)
     ? WaveColors.outlineSoft

@@ -115,12 +115,9 @@ class _WaveWelcomePageState
 
   @override
   Widget build(BuildContext context) {
-    final dark = waveIsDark(context);
     final wide = MediaQuery.sizeOf(context).width >= 860;
     return Mica(
-      backgroundColor: dark
-          ? WaveColors.background
-          : WaveColors.lightBackground,
+      backgroundColor: waveBackground(context),
       child: Column(
         children: [
           const _WelcomeChrome(),
@@ -1009,9 +1006,11 @@ class _MosaicFallback extends StatelessWidget {
           end: Alignment.bottomRight,
           colors: [
             tint.withValues(alpha: dark ? 0.85 : 0.7),
-            dark
-                ? WaveColors.surfaceRaised
-                : WaveColors.lightOverlay,
+            waveAmoled(context)
+                ? Colors.black
+                : (dark
+                    ? WaveColors.surfaceRaised
+                    : WaveColors.lightOverlay),
           ],
         ),
       ),

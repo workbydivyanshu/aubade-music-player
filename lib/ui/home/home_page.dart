@@ -17,6 +17,7 @@ import '../../features/innertube/yt_library_providers.dart';
 import '../../features/lastfm/auth_repository.dart';
 import '../../features/player/playback_service.dart';
 import '../components/artwork.dart';
+import '../components/glass_panel.dart';
 import '../components/menus.dart';
 import '../components/shelf.dart';
 import '../components/states.dart';
@@ -909,9 +910,13 @@ class _FeaturedHero extends ConsumerWidget {
     final width = MediaQuery.sizeOf(context).width;
     final narrow = width < 860;
     final tint = ref.watch(_homeTintProvider(track.artworkUrl)).valueOrNull;
-    final wash = tint != null
-        ? tint.withValues(alpha: 0.12)
-        : (dark ? Colors.white.withValues(alpha: 0.04) : Colors.black.withValues(alpha: 0.03));
+    final wash = waveAmoled(context)
+        ? Colors.transparent
+        : (tint != null
+            ? tint.withValues(alpha: 0.12)
+            : (dark
+                ? Colors.white.withValues(alpha: 0.04)
+                : Colors.black.withValues(alpha: 0.03)));
     final artSize = narrow ? 132.0 : 176.0;
 
     final left = Row(
@@ -1038,23 +1043,19 @@ class _FeaturedHero extends ConsumerWidget {
     );
 
     if (narrow || upNext.isEmpty) {
-      return Container(
+      return GlassPanel(
         padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: wash,
-          borderRadius: BorderRadius.circular(10),
-        ),
+        tint: wash,
+        borderRadius: BorderRadius.circular(10),
         child: left,
       );
     }
 
     // Wide: 58% featured + divider + 42% up-next stack.
-    return Container(
+    return GlassPanel(
       padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: wash,
-        borderRadius: BorderRadius.circular(10),
-      ),
+      tint: wash,
+      borderRadius: BorderRadius.circular(10),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [

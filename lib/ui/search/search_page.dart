@@ -442,7 +442,6 @@ class _WaveSearchPageState extends ConsumerState<WaveSearchPage> {
   //    title-bar pill (Ctrl+K) owns entry from the Explore surface.
 
   Widget _buildQueryBar(double side) {
-    final dark = waveIsDark(context);
     final viewport = MediaQuery.sizeOf(context).width;
     // 28+ px: wraps responsively between 320 and 420 and shrinks before
     // it can ever overflow a narrow desktop window.
@@ -473,7 +472,7 @@ class _WaveSearchPageState extends ConsumerState<WaveSearchPage> {
       height: _kQueryBarExtent,
       decoration: BoxDecoration(
         color: _scrolled
-            ? (dark ? WaveColors.background : WaveColors.lightBackground)
+            ? waveBackground(context)
             : Colors.transparent,
         border: _scrolled
             ? Border(bottom: BorderSide(color: waveDivider(context)))

@@ -516,7 +516,6 @@ class _WaveShellState extends ConsumerState<WaveShell> {
 
   @override
   Widget build(BuildContext context) {
-    final dark = waveIsDark(context);
     final active = waveActivePath(widget.location);
     final hasTrack = ref.watch(
       playbackServiceProvider.select((s) => s.current != null),
@@ -536,8 +535,7 @@ class _WaveShellState extends ConsumerState<WaveShell> {
     // wave_hotkeys.dart), which runs before focus dispatch and works from
     // anywhere. Enter is deliberately left to focused controls.
     return Mica(
-          backgroundColor:
-              dark ? WaveColors.background : WaveColors.lightBackground,
+          backgroundColor: waveBackground(context),
           child: Column(
             children: [
               _titleBarFor(
@@ -764,6 +762,7 @@ class _ShellAmbientGlow extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    if (waveAmoled(context)) return const SizedBox.shrink();
     if (!ref.watch(ambientGlowEnabledProvider)) return const SizedBox.shrink();
     if (!ref.watch(windowVisibleProvider)) return const SizedBox.shrink();
     // Same reduce-transparency contract as WaveAmbientMesh: high contrast

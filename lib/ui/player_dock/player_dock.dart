@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart' as avp;
@@ -17,6 +18,7 @@ import '../../features/library/local_track.dart';
 import '../../features/library/playlists.dart';
 import '../../features/player/playback_service.dart';
 import '../../features/search/shared_providers.dart';
+import '../../features/settings/theme_controller.dart';
 import '../components/ambient.dart';
 import '../components/artwork.dart';
 import '../components/buttons.dart' show LWTooltip, LWVolumeSlider;
@@ -163,19 +165,25 @@ class WavePlayerDock extends ConsumerWidget {
     // tonal fill instead (the same guard the haze family uses: the
     // backdrop behind the island is static chrome, never ticking
     // content).
-    final blurred = WaveHazeScope.blurEnabled(context) &&
+    final amoled = waveAmoled(context);
+    final blurred = !amoled &&
+        WaveHazeScope.blurEnabled(context) &&
         !(MediaQuery.maybeOf(context)?.highContrast ?? false);
-    final islandFill = dark
-        ? const Color(0xCC16161A)
-        : const Color(0xCCFFFFFF); // light: softer white equivalent.
+    final islandFill = amoled
+        ? Colors.black
+        : (dark
+            ? const Color(0xCC16161A)
+            : const Color(0xCCFFFFFF)); // light: softer white equivalent.
     final baseFill = blurred
         ? islandFill
-        : islandFill.withValues(alpha: dark ? 0.95 : 0.97);
+        : islandFill.withValues(alpha: amoled ? 1.0 : (dark ? 0.95 : 0.97));
     // 14% artwork-tint lerp; null seed (upstream clamp) → plain fill.
     // Liquid glass caustics: dynamic artwork radiance permeates the dock.
-    final targetBase = dockTint == null
-        ? baseFill
-        : Color.lerp(baseFill, dockTint, 0.14) ?? baseFill;
+    final targetBase = amoled
+        ? Colors.black
+        : (dockTint == null
+            ? baseFill
+            : Color.lerp(baseFill, dockTint, 0.14) ?? baseFill);
     // Island shadows: deep black elevation + vibrant artwork caustic aura.
     final islandShadows = [
       BoxShadow(
@@ -183,7 +191,7 @@ class WavePlayerDock extends ConsumerWidget {
         blurRadius: 28,
         offset: const Offset(0, 10),
       ),
-      if (dockTint != null)
+      if (!amoled && dockTint != null)
         BoxShadow(
           color: dockTint.withValues(alpha: dark ? 0.22 : 0.14),
           blurRadius: 42,
@@ -1075,6 +1083,12 @@ class _DockProgressState extends ConsumerState<_DockProgress> {
           duration: s.duration,
         )));
     final notifier = ref.read(playbackServiceProvider.notifier);
+    final wavy = ref.watch(
+      themeControllerProvider.select((t) => t.wavySeekbar),
+    );
+    final playing = ref.watch(
+      playbackServiceProvider.select((s) => s.isPlaying),
+    );
 
     final timeStyle = WaveType.meta.copyWith(
       fontSize: 11,
@@ -1089,6 +1103,13 @@ class _DockProgressState extends ConsumerState<_DockProgress> {
     // Compact windows hide timestamps so the timeline never overflows;
     // the hover tooltip still announces the seek target.
     final showTimes = !widget.compact;
+    final progressFraction = totalMs > 0
+        ? (clock.position.inMilliseconds / totalMs).clamp(0.0, 1.0)
+        : 0.0;
+    final bufferedFraction = totalMs > 0
+        ? (clock.buffered.inMilliseconds / totalMs).clamp(0.0, 1.0)
+        : 0.0;
+    final barColor = dark ? Colors.white : Colors.black;
     return Row(
       children: [
         if (showTimes)
@@ -1146,28 +1167,58 @@ class _DockProgressState extends ConsumerState<_DockProgress> {
                         const EdgeInsets.symmetric(vertical: 7),
                     color: Colors.transparent,
                     child: RepaintBoundary(
-                      child: avp.ProgressBar(
-                        progress: clock.position,
-                        buffered: clock.buffered,
-                        total: clock.duration,
-                        onSeek: notifier.seek,
-                        barHeight: 3,
-                        thumbRadius: 5,
-                        thumbColor:
-                            dark ? Colors.white : Colors.black,
-                        thumbGlowColor:
-                            accent.withValues(alpha: 0.25),
-                        progressBarColor:
-                            dark ? Colors.white : Colors.black,
-                        bufferedBarColor:
-                            (dark ? Colors.white : Colors.black)
-                                .withValues(alpha: 0.18),
-                        baseBarColor:
-                            (dark ? Colors.white : Colors.black)
-                                .withValues(alpha: 0.12),
-                        timeLabelLocation:
-                            avp.TimeLabelLocation.none,
-                      ),
+                      child: wavy
+                          ? Stack(
+                              children: [
+                                // Decorative only: the real ProgressBar sits
+                                // on top with transparent paint, keeping the
+                                // exact same hit region and drag semantics.
+                                Positioned.fill(
+                                  child: IgnorePointer(
+                                    child: _WavySeekTrack(
+                                      progress: progressFraction,
+                                      buffered: bufferedFraction,
+                                      playing: playing,
+                                      color: barColor,
+                                      accent: accent,
+                                    ),
+                                  ),
+                                ),
+                                avp.ProgressBar(
+                                  progress: clock.position,
+                                  buffered: clock.buffered,
+                                  total: clock.duration,
+                                  onSeek: notifier.seek,
+                                  barHeight: 3,
+                                  thumbRadius: 5,
+                                  thumbColor: Colors.transparent,
+                                  thumbGlowColor: Colors.transparent,
+                                  progressBarColor: Colors.transparent,
+                                  bufferedBarColor: Colors.transparent,
+                                  baseBarColor: Colors.transparent,
+                                  timeLabelLocation:
+                                      avp.TimeLabelLocation.none,
+                                ),
+                              ],
+                            )
+                          : avp.ProgressBar(
+                              progress: clock.position,
+                              buffered: clock.buffered,
+                              total: clock.duration,
+                              onSeek: notifier.seek,
+                              barHeight: 3,
+                              thumbRadius: 5,
+                              thumbColor: barColor,
+                              thumbGlowColor:
+                                  accent.withValues(alpha: 0.25),
+                              progressBarColor: barColor,
+                              bufferedBarColor:
+                                  barColor.withValues(alpha: 0.18),
+                              baseBarColor:
+                                  barColor.withValues(alpha: 0.12),
+                              timeLabelLocation:
+                                  avp.TimeLabelLocation.none,
+                            ),
                     ),
                   ),
                 ),
@@ -1184,6 +1235,176 @@ class _DockProgressState extends ConsumerState<_DockProgress> {
       ],
     );
   }
+}
+
+/// Animated sine-warped seek track painted behind the transparent
+/// [avp.ProgressBar]. Runs only while playing; paused/finished keeps the
+/// last phase static. Purely decorative — no gesture handling here.
+class _WavySeekTrack extends StatefulWidget {
+  final double progress;
+  final double buffered;
+  final bool playing;
+  final Color color;
+  final Color accent;
+
+  const _WavySeekTrack({
+    required this.progress,
+    required this.buffered,
+    required this.playing,
+    required this.color,
+    required this.accent,
+  });
+
+  @override
+  State<_WavySeekTrack> createState() => _WavySeekTrackState();
+}
+
+class _WavySeekTrackState extends State<_WavySeekTrack>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _phase;
+
+  @override
+  void initState() {
+    super.initState();
+    _phase = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    );
+    if (widget.playing) _phase.repeat();
+  }
+
+  @override
+  void didUpdateWidget(covariant _WavySeekTrack old) {
+    super.didUpdateWidget(old);
+    if (widget.playing && !_phase.isAnimating) {
+      _phase.repeat();
+    } else if (!widget.playing && _phase.isAnimating) {
+      _phase.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _phase.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _phase,
+        builder: (context, _) => CustomPaint(
+          painter: _WavySeekPainter(
+            progress: widget.progress,
+            buffered: widget.buffered,
+            phase: _phase.value,
+            color: widget.color,
+            accent: widget.accent,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WavySeekPainter extends CustomPainter {
+  final double progress;
+  final double buffered;
+  final double phase;
+  final Color color;
+  final Color accent;
+
+  const _WavySeekPainter({
+    required this.progress,
+    required this.buffered,
+    required this.phase,
+    required this.color,
+    required this.accent,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.width <= 0 || size.height <= 0) return;
+    final midY = size.height / 2;
+    // 3px visual band with a 1.4px undulation — the same footprint as the
+    // stock 3px bar, just alive while playing.
+    const amplitude = 1.4;
+    const wavelength = 26.0;
+
+    Path wave(double upto, {double amp = amplitude, double phaseShift = 0}) {
+      final path = Path();
+      final end = (size.width * upto.clamp(0.0, 1.0));
+      for (var x = 0.0; x <= end + 0.5; x += 1.5) {
+        final y = midY +
+            math.sin((x / wavelength) * 2 * math.pi + phase * 2 * math.pi +
+                    phaseShift) *
+                amp;
+        if (x == 0) {
+          path.moveTo(x, y);
+        } else {
+          path.lineTo(x, y);
+        }
+      }
+      return path;
+    }
+
+    final base = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..color = color.withValues(alpha: 0.12);
+    canvas.drawPath(wave(1), base);
+
+    if (buffered > 0) {
+      final bufferedPaint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round
+        ..color = color.withValues(alpha: 0.18);
+      canvas.drawPath(wave(buffered), bufferedPaint);
+    }
+
+    if (progress > 0) {
+      final progressPaint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round
+        ..shader = LinearGradient(
+          colors: [color, Color.lerp(color, accent, 0.55)!],
+        ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+      canvas.drawPath(
+        wave(progress, amp: amplitude + 0.6),
+        progressPaint,
+      );
+    }
+
+    // Thumb follows the wave crest so the seek affordance stays visible.
+    final x = size.width * progress.clamp(0.0, 1.0);
+    final y = midY +
+        math.sin((x / wavelength) * 2 * math.pi + phase * 2 * math.pi) *
+            amplitude;
+    canvas.drawCircle(
+      Offset(x, y),
+      9,
+      Paint()
+        ..color = accent.withValues(alpha: 0.22)
+        ..style = PaintingStyle.fill,
+    );
+    canvas.drawCircle(
+      Offset(x, y),
+      5,
+      Paint()..color = color,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _WavySeekPainter old) =>
+      old.progress != progress ||
+      old.buffered != buffered ||
+      old.phase != phase ||
+      old.color != color ||
+      old.accent != accent;
 }
 
 class _LikeGlyph extends ConsumerStatefulWidget {

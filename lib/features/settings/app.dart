@@ -14,6 +14,7 @@ import '../../features/lastfm/auth_repository.dart';
 import '../../features/lastfm/scrobble_repository.dart';
 import '../../ui/theme/fluent_theme.dart';
 import '../../ui/theme/haze.dart';
+import '../../ui/theme/tokens.dart';
 import '../player/playback_service.dart';
 import '../audio_output/output_controller.dart';
 import '../mpris/mpris_service.dart';
@@ -93,8 +94,10 @@ class _AubadeAppState extends ConsumerState<AubadeApp> {
   @override
   Widget build(BuildContext context) {
     ref.listen(
-        themeControllerProvider.select((t) => t.isLight),
-        (_, light) => applyWindowMaterial(isLight: light));
+        themeControllerProvider.select(
+            (t) => (isLight: t.isLight, amoled: t.amoled)),
+        (_, v) => applyWindowMaterial(
+            isLight: v.isLight && !v.amoled));
     // Live auth state drives the gate (login, logout, guest entry,
     // session expiry). Guests count as inside.
     ref.listen(
@@ -110,46 +113,53 @@ class _AubadeAppState extends ConsumerState<AubadeApp> {
       }
     });
     final theme = ref.watch(themeControllerProvider);
+    final accent = ref.watch(resolvedAccentProvider);
+    // AMOLED is deep dark regardless of the Pearl/Midnight preference.
+    final isLight = theme.isLight && !theme.amoled;
 
     final darkTheme = buildWaveFluentTheme(
-      accent: theme.accent,
+      accent: accent,
       isLight: false,
+      amoled: theme.amoled,
     );
     final lightTheme = buildWaveFluentTheme(
-      accent: theme.accent,
+      accent: accent,
       isLight: true,
     );
 
-    return WaveHazeScope(
-      material: switch (theme.hazeMaterial) {
-        'haze' => WaveMaterialMode.haze,
-        'solid' => WaveMaterialMode.solid,
-        _ => WaveMaterialMode.automatic,
-      },
-      intensity: switch (theme.hazeIntensity) {
-        'low' => WaveHazeIntensity.low,
-        'high' => WaveHazeIntensity.high,
-        _ => WaveHazeIntensity.medium,
-      },
-      child: WindowLifecycle(
-        child: FluentApp.router(
-          title: 'Aubade',
-          debugShowCheckedModeBanner: false,
-          theme: lightTheme,
-          darkTheme: darkTheme,
-          themeMode:
-              theme.isLight ? ThemeMode.light : ThemeMode.dark,
-          routerConfig: _router,
-          // ONE Fluent scrollbar treatment everywhere: thin, fades when
-          // idle, no browser-style horizontal bars under carousels.
-          scrollBehavior: const WaveScrollBehavior(),
-          // No acrylic anywhere: fluent MenuFlyout/ComboBox render a
-          // fullscreen BackdropFilter blur unless DisableAcrylic is
-          // present — that blur sample on the open frame is the hitch
-          // on every toolbar popup. The app is opaque dark anyway, so
-          // solid flyouts read identically. (Own haze system untouched.)
-          builder: (context, child) =>
-              DisableAcrylic(child: child ?? const SizedBox.shrink()),
+    return WaveSurfaceScope(
+      amoled: theme.amoled,
+      liquidGlass: theme.liquidGlass,
+      child: WaveHazeScope(
+        material: switch (theme.hazeMaterial) {
+          'haze' => WaveMaterialMode.haze,
+          'solid' => WaveMaterialMode.solid,
+          _ => WaveMaterialMode.automatic,
+        },
+        intensity: switch (theme.hazeIntensity) {
+          'low' => WaveHazeIntensity.low,
+          'high' => WaveHazeIntensity.high,
+          _ => WaveHazeIntensity.medium,
+        },
+        child: WindowLifecycle(
+          child: FluentApp.router(
+            title: 'Aubade',
+            debugShowCheckedModeBanner: false,
+            theme: lightTheme,
+            darkTheme: darkTheme,
+            themeMode: isLight ? ThemeMode.light : ThemeMode.dark,
+            routerConfig: _router,
+            // ONE Fluent scrollbar treatment everywhere: thin, fades when
+            // idle, no browser-style horizontal bars under carousels.
+            scrollBehavior: const WaveScrollBehavior(),
+            // No acrylic anywhere: fluent MenuFlyout/ComboBox render a
+            // fullscreen BackdropFilter blur unless DisableAcrylic is
+            // present — that blur sample on the open frame is the hitch
+            // on every toolbar popup. The app is opaque dark anyway, so
+            // solid flyouts read identically. (Own haze system untouched.)
+            builder: (context, child) =>
+                DisableAcrylic(child: child ?? const SizedBox.shrink()),
+          ),
         ),
       ),
     );

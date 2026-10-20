@@ -692,9 +692,9 @@ class _GenreTileState extends State<_GenreTile> {
                           fadeInDuration:
                               const Duration(milliseconds: 110),
                           placeholder: (context, _) => Container(
-                              color: WaveColors.surfaceRaised),
+                              color: waveSurfaceRaised(context)),
                           errorWidget: (context, _, _) => Container(
-                              color: WaveColors.surfaceRaised),
+                              color: waveSurfaceRaised(context)),
                         );
                       }),
                     Container(

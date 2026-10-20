@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:palette_generator/palette_generator.dart';
 
+import '../../core/artwork/accent_extraction.dart';
 import '../../core/storage/prefs.dart';
 import '../theme/haze.dart';
 import '../theme/tokens.dart';
@@ -199,9 +200,7 @@ class _StageScrim extends StatelessWidget {
           colors: [
             (isDark ? Colors.black : Colors.white)
                 .withValues(alpha: topAlpha),
-            (isDark
-                    ? WaveColors.background
-                    : WaveColors.lightBackground)
+            waveBackground(context)
                 .withValues(alpha: bottomAlpha),
           ],
         ),
@@ -517,6 +516,26 @@ final artworkSeedProvider =
   return pal.primary;
 });
 
+/// One accent seed derived from the current cover, reusing the shared
+/// palette decode above (no second image pass). Falls back to crimson
+/// when the palette is unusable (grayscale art / no artwork).
+final artworkAccentColorProvider =
+    FutureProvider.autoDispose.family<Color, String>((ref, url) async {
+  if (url.isEmpty) return WaveColors.defaultAccent;
+  final pal = await ref.watch(artworkPaletteProvider(url).future);
+  // Palette extraction returns a warm charcoal fallback when the cover
+  // cannot be decoded; that is not the artwork's colour, so keep the
+  // shipped accent instead of tinting from a placeholder.
+  if (pal == ArtworkPalette.fallback) return WaveColors.defaultAccent;
+  return deriveArtworkAccent([
+    pal.vibrant,
+    pal.lightVibrant,
+    pal.primary,
+    pal.cream,
+    pal.darkMuted,
+  ]);
+});
+
 /// Orb palette for the shell-level ambient glow. Deliberately rides the
 /// SAME future as [artworkPaletteProvider]: one 192px decode + one isolate
 /// quantization pass per artwork URL (the family arg is the cache key), so
@@ -592,6 +611,8 @@ class WaveAmbientMesh extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // AMOLED: the stage stays true black — no wash behind panels.
+    if (waveAmoled(context)) return const SizedBox.shrink();
     final reduceTransparency =
         MediaQuery.maybeOf(context)?.highContrast ?? false;
     final blurEnabled = WaveHazeScope.blurEnabled(context);
@@ -940,6 +961,7 @@ class AmbientWash extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (waveAmoled(context)) return const SizedBox.shrink();
     if (dynamicMesh) {
       return WaveAmbientMesh(
         artworkUrl: artworkUrl,
