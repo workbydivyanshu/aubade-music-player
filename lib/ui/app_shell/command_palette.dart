@@ -125,17 +125,62 @@ class _SpotItem {
   });
 }
 
-// Canonical sheet constants: liquid obsidian acrylic over a black scrim.
-const _sheetColor = Color(0xF2121216);
-const _rimTopColor = Color(0x33FFFFFF);
-const _rimSideColor = Color(0x14FFFFFF);
+// Dark acrylic sheet: obsidian with a luminous rim. Pearl takes the
+// semantic light surface + outline tokens below instead of a forced
+// dark slab, so the sheet belongs to the active theme (E2).
+const _darkSheetColor = Color(0xF2121216);
+const _darkRimTopColor = Color(0x33FFFFFF);
+const _darkRimSideColor = Color(0x14FFFFFF);
+
+bool _spotlightDark(BuildContext context) => waveIsDark(context);
+
+/// Acrylic sheet fill: unchanged dark obsidian, Pearl white acrylic.
+Color _spotlightSheet(BuildContext context) {
+  if (waveAmoled(context)) return Colors.black;
+  return _spotlightDark(context)
+      ? _darkSheetColor
+      : WaveColors.lightSurface.withValues(alpha: 0.97);
+}
+
+/// Interaction wash that follows the sheet's brightness: white lifts the
+/// dark acrylic, black tints the light acrylic.
+Color _spotlightWash(BuildContext context, double alpha) =>
+    (_spotlightDark(context) ? Colors.white : Colors.black)
+        .withValues(alpha: alpha);
+
+/// Designed neutral selection accent, inverted per theme (the same rule
+/// as the `aubade` accent source): off-white on dark, ink on Pearl.
+Color _spotlightSelect(BuildContext context) => _spotlightDark(context)
+    ? WaveColors.neutralAccent
+    : WaveColors.lightTextPrimary;
+
+Color _spotlightOnSelect(BuildContext context) =>
+    _spotlightSelect(context).computeLuminance() > 0.5
+        ? Colors.black
+        : Colors.white;
 
 /// Per-side 1px rim: bright top chamfer, whisper sides/bottom.
-Border _spotlightRim() => const Border(
-      top: BorderSide(color: _rimTopColor),
-      left: BorderSide(color: _rimSideColor),
-      right: BorderSide(color: _rimSideColor),
-      bottom: BorderSide(color: _rimSideColor),
+Border _spotlightRim(BuildContext context) => Border(
+      top: BorderSide(
+        color: _spotlightDark(context)
+            ? _darkRimTopColor
+            : WaveColors.lightOutline,
+      ),
+      left: BorderSide(
+        color: _spotlightDark(context)
+            ? _darkRimSideColor
+            : WaveColors.lightOutlineSoft,
+      ),
+      right: BorderSide(
+        color: _spotlightDark(context)
+            ? _darkRimSideColor
+            : WaveColors.lightOutlineSoft,
+      ),
+      bottom: BorderSide(
+        color: _spotlightDark(context)
+            ? _darkRimSideColor
+            : WaveColors.lightOutlineSoft,
+      ),
     );
 
 class _SpotlightDialog extends ConsumerStatefulWidget {
@@ -671,7 +716,9 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
                     const BorderRadius.all(Radius.circular(18)),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.60),
+                    color: Colors.black.withValues(
+                      alpha: _spotlightDark(context) ? 0.60 : 0.18,
+                    ),
                     blurRadius: 42,
                     offset: const Offset(0, 20),
                   ),
@@ -680,13 +727,13 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
               child: ClipRRect(
                 borderRadius:
                     const BorderRadius.all(Radius.circular(18)),
-                // Acrylic: blur the dimmed app behind the obsidian sheet.
+                // Acrylic: blur the dimmed app behind the sheet.
                 child: BackdropFilter(
                   filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color: waveAmoled(context) ? Colors.black : _sheetColor,
-                      border: _spotlightRim(),
+                      color: _spotlightSheet(context),
+                      border: _spotlightRim(context),
                     ),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
@@ -695,7 +742,7 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
                         _buildTabs(),
                         Container(
                           height: 1,
-                          color: _rimTopColor,
+                          color: _spotlightWash(context, 0.20),
                         ),
                         ConstrainedBox(
                           constraints: BoxConstraints(
@@ -760,7 +807,7 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
           Icon(
             WaveIcons.search,
             size: 16,
-            color: WaveColors.textTertiary,
+            color: waveTextTertiary(context),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -784,14 +831,14 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
               placeholderStyle: WaveType.body.copyWith(
                 fontSize: 14.5,
                 fontWeight: FontWeight.w500,
-                color: WaveColors.textTertiary,
+                color: waveTextTertiary(context),
               ),
               style: WaveType.body.copyWith(
                 fontSize: 14.5,
                 fontWeight: FontWeight.w500,
-                color: WaveColors.textPrimary,
+                color: waveTextPrimary(context),
               ),
-              cursorColor: WaveColors.neutralAccent,
+              cursorColor: _spotlightSelect(context),
               onChanged: _onChanged,
               onSubmitted: (_) => _activate(rows),
             ),
@@ -822,9 +869,13 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
 
   Widget _buildFooter(String q) {
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(
-          top: BorderSide(color: _rimSideColor),
+          top: BorderSide(
+            color: _spotlightDark(context)
+                ? _darkRimSideColor
+                : WaveColors.lightOutlineSoft,
+          ),
         ),
       ),
       child: MouseRegion(
@@ -840,8 +891,7 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
                 Icon(
                   WaveIcons.search,
                   size: 14,
-                  color:
-                      WaveColors.neutralAccent.withValues(alpha: 0.8),
+                  color: _spotlightSelect(context).withValues(alpha: 0.8),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -851,7 +901,7 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
                     overflow: TextOverflow.ellipsis,
                     style: WaveType.meta.copyWith(
                       fontSize: 12.5,
-                      color: WaveColors.textSecondary,
+                      color: waveTextSecondary(context),
                     ),
                   ),
                 ),
@@ -889,10 +939,16 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
     return Container(
       height: 38,
       padding: const EdgeInsets.symmetric(horizontal: 14),
-      decoration: const BoxDecoration(
-        color: Color(0x660E0E12),
+      decoration: BoxDecoration(
+        color: _spotlightDark(context)
+            ? const Color(0x660E0E12)
+            : WaveColors.lightBackground,
         border: Border(
-          top: BorderSide(color: Color(0x18FFFFFF)),
+          top: BorderSide(
+            color: _spotlightDark(context)
+                ? const Color(0x18FFFFFF)
+                : WaveColors.lightOutlineSoft,
+          ),
         ),
       ),
       child: Row(
@@ -904,10 +960,10 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
               const SizedBox(width: 6),
               Text(
                 actionLabel,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.w500,
-                  color: WaveColors.textSecondary,
+                  color: waveTextSecondary(context),
                 ),
               ),
             ],
@@ -915,34 +971,34 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
           const Spacer(),
           Row(
             mainAxisSize: MainAxisSize.min,
-            children: const [
-              _ShortcutBadge(label: 'Tab'),
-              SizedBox(width: 4),
+            children: [
+              const _ShortcutBadge(label: 'Tab'),
+              const SizedBox(width: 4),
               Text(
                 'Scope',
                 style: TextStyle(
                   fontSize: 11,
-                  color: WaveColors.textTertiary,
+                  color: waveTextTertiary(context),
                 ),
               ),
-              SizedBox(width: 10),
-              _ShortcutBadge(label: '↑↓'),
-              SizedBox(width: 4),
+              const SizedBox(width: 10),
+              const _ShortcutBadge(label: '↑↓'),
+              const SizedBox(width: 4),
               Text(
                 'Navigate',
                 style: TextStyle(
                   fontSize: 11,
-                  color: WaveColors.textTertiary,
+                  color: waveTextTertiary(context),
                 ),
               ),
-              SizedBox(width: 10),
-              _ShortcutBadge(label: 'Esc'),
-              SizedBox(width: 4),
+              const SizedBox(width: 10),
+              const _ShortcutBadge(label: 'Esc'),
+              const SizedBox(width: 4),
               Text(
                 'Close',
                 style: TextStyle(
                   fontSize: 11,
-                  color: WaveColors.textTertiary,
+                  color: waveTextTertiary(context),
                 ),
               ),
             ],
@@ -1009,8 +1065,7 @@ class _RecentsChipsState extends State<_RecentsChips> {
           height: 26,
           padding: const EdgeInsets.symmetric(horizontal: 10),
           decoration: BoxDecoration(
-            color: Colors.white
-                .withValues(alpha: _hovered == i ? 0.11 : 0.07),
+            color: _spotlightWash(context, _hovered == i ? 0.11 : 0.07),
             borderRadius: BorderRadius.circular(13),
           ),
           child: Row(
@@ -1019,7 +1074,7 @@ class _RecentsChipsState extends State<_RecentsChips> {
               Icon(
                 WaveIcons.history,
                 size: 12,
-                color: WaveColors.textTertiary,
+                color: waveTextTertiary(context),
               ),
               const SizedBox(width: 5),
               Text(
@@ -1029,7 +1084,7 @@ class _RecentsChipsState extends State<_RecentsChips> {
                 style: TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.w500,
-                  color: WaveColors.textSecondary,
+                  color: waveTextSecondary(context),
                 ),
               ),
             ],
@@ -1062,7 +1117,7 @@ class _SearchingRow extends StatelessWidget {
             'Searching…',
             style: TextStyle(
               fontSize: 12,
-              color: WaveColors.textSecondary,
+              color: waveTextSecondary(context),
             ),
           ),
         ],
@@ -1084,7 +1139,7 @@ class _SpotHint extends StatelessWidget {
         message,
         style: TextStyle(
           fontSize: 12.5,
-          color: WaveColors.textTertiary,
+          color: waveTextTertiary(context),
         ),
       ),
     );
@@ -1101,19 +1156,19 @@ class _ShortcutBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.08),
+        color: _spotlightWash(context, 0.08),
         borderRadius: BorderRadius.circular(4),
         border: Border.all(
-          color: Colors.white.withValues(alpha: 0.12),
+          color: _spotlightWash(context, 0.12),
           width: 0.5,
         ),
       ),
       child: Text(
         label,
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 10,
           fontWeight: FontWeight.w600,
-          color: WaveColors.textSecondary,
+          color: waveTextSecondary(context),
         ),
       ),
     );
@@ -1156,21 +1211,23 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: isSelected
-                ? Colors.white.withValues(alpha: 0.12)
+                ? _spotlightWash(context, 0.12)
                 : isHovered
-                    ? Colors.white.withValues(alpha: 0.08)
-                    : Colors.white.withValues(alpha: 0.04),
+                    ? _spotlightWash(context, 0.08)
+                    : _spotlightWash(context, 0.04),
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
               color: isSelected
-                  ? WaveColors.neutralAccent.withValues(alpha: 0.40)
-                  : Colors.white.withValues(alpha: 0.08),
+                  ? _spotlightSelect(context).withValues(alpha: 0.40)
+                  : _spotlightWash(context, 0.08),
               width: 1,
             ),
             boxShadow: isSelected
                 ? [
                     BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.35),
+                      color: Colors.black.withValues(
+                        alpha: _spotlightDark(context) ? 0.35 : 0.10,
+                      ),
                       blurRadius: 16,
                       offset: const Offset(0, 4),
                     ),
@@ -1195,9 +1252,9 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
                               label: r.artLabel,
                             ))
                       : Container(
-                          color: Colors.white.withValues(alpha: 0.08),
+                          color: _spotlightWash(context, 0.08),
                           child: Icon(r.icon,
-                              size: 24, color: WaveColors.textSecondary),
+                              size: 24, color: waveTextSecondary(context)),
                         ),
                 ),
               ),
@@ -1213,17 +1270,17 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: WaveColors.neutralAccent
+                            color: _spotlightSelect(context)
                                 .withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(4),
                           ),
-                          child: const Text(
+                          child: Text(
                             'TOP RESULT',
                             style: TextStyle(
                               fontSize: 9.5,
                               fontWeight: FontWeight.w700,
                               letterSpacing: 0.8,
-                              color: WaveColors.neutralAccent,
+                              color: _spotlightSelect(context),
                             ),
                           ),
                         ),
@@ -1231,10 +1288,10 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
                           const SizedBox(width: 6),
                           Text(
                             r.meta,
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w500,
-                              color: WaveColors.textTertiary,
+                              color: waveTextTertiary(context),
                             ),
                           ),
                         ],
@@ -1248,7 +1305,7 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
                       style: WaveType.trackTitle.copyWith(
                         fontSize: 14.5,
                         fontWeight: FontWeight.w600,
-                        color: WaveColors.textPrimary,
+                        color: waveTextPrimary(context),
                       ),
                     ),
                     const SizedBox(height: 2),
@@ -1258,7 +1315,7 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
                       overflow: TextOverflow.ellipsis,
                       style: WaveType.meta.copyWith(
                         fontSize: 12,
-                        color: WaveColors.textSecondary,
+                        color: waveTextSecondary(context),
                       ),
                     ),
                   ],
@@ -1270,8 +1327,8 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 decoration: BoxDecoration(
                   color: isSelected
-                      ? WaveColors.neutralAccent
-                      : Colors.white.withValues(alpha: 0.10),
+                      ? _spotlightSelect(context)
+                      : _spotlightWash(context, 0.10),
                   borderRadius: BorderRadius.circular(17),
                 ),
                 child: Row(
@@ -1281,8 +1338,8 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
                       FluentIcons.play,
                       size: 11,
                       color: isSelected
-                          ? Colors.black
-                          : WaveColors.textPrimary,
+                          ? _spotlightOnSelect(context)
+                          : waveTextPrimary(context),
                     ),
                     const SizedBox(width: 6),
                     Text(
@@ -1291,8 +1348,8 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                         color: isSelected
-                            ? Colors.black
-                            : WaveColors.textPrimary,
+                            ? _spotlightOnSelect(context)
+                            : waveTextPrimary(context),
                       ),
                     ),
                   ],
@@ -1348,13 +1405,13 @@ class _SpotRowState extends State<_SpotRow> {
         width: 30,
         height: 30,
         decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.08),
+          color: _spotlightWash(context, 0.08),
           borderRadius: BorderRadius.circular(WaveRadius.artwork),
         ),
         child: Icon(
           r.icon,
           size: 15,
-          color: WaveColors.textSecondary,
+          color: waveTextSecondary(context),
         ),
       );
     }
@@ -1369,27 +1426,27 @@ class _SpotRowState extends State<_SpotRow> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
               decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.08),
+                color: _spotlightWash(context, 0.08),
                 borderRadius: BorderRadius.circular(4),
               ),
               child: Text(
                 parts[0],
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 10,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 0.3,
-                  color: WaveColors.textSecondary,
+                  color: waveTextSecondary(context),
                 ),
               ),
             ),
             const SizedBox(width: 6),
             Text(
               parts[1],
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
-                color: WaveColors.textTertiary,
-                fontFeatures: [FontFeature.tabularFigures()],
+                color: waveTextTertiary(context),
+                fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
           ],
@@ -1397,12 +1454,12 @@ class _SpotRowState extends State<_SpotRow> {
       } else {
         metaWidget = Text(
           r.meta,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 11,
             fontWeight: FontWeight.w500,
             letterSpacing: 0.2,
-            color: WaveColors.textTertiary,
-            fontFeatures: [FontFeature.tabularFigures()],
+            color: waveTextTertiary(context),
+            fontFeatures: const [FontFeature.tabularFigures()],
           ),
         );
       }
@@ -1421,9 +1478,9 @@ class _SpotRowState extends State<_SpotRow> {
           padding: const EdgeInsets.only(right: 14),
           decoration: BoxDecoration(
             color: isSelected
-                ? Colors.white.withValues(alpha: 0.10)
+                ? _spotlightWash(context, 0.10)
                 : isHovered
-                    ? Colors.white.withValues(alpha: 0.06)
+                    ? _spotlightWash(context, 0.06)
                     : Colors.transparent,
           ),
           child: Row(
@@ -1433,7 +1490,7 @@ class _SpotRowState extends State<_SpotRow> {
                 height: 22,
                 decoration: BoxDecoration(
                   color: isSelected
-                      ? WaveColors.neutralAccent
+                      ? _spotlightSelect(context)
                       : Colors.transparent,
                   borderRadius: const BorderRadius.only(
                     topRight: Radius.circular(2),
@@ -1457,7 +1514,7 @@ class _SpotRowState extends State<_SpotRow> {
                         fontSize: 13,
                         fontWeight:
                             isSelected ? FontWeight.w600 : FontWeight.w500,
-                        color: WaveColors.textPrimary,
+                        color: waveTextPrimary(context),
                       ),
                     ),
                     if (r.sub.isNotEmpty)
@@ -1468,8 +1525,8 @@ class _SpotRowState extends State<_SpotRow> {
                         style: TextStyle(
                           fontSize: 11.5,
                           color: isSelected
-                              ? WaveColors.textSecondary
-                              : WaveColors.textTertiary,
+                              ? waveTextSecondary(context)
+                              : waveTextTertiary(context),
                         ),
                       ),
                   ],
@@ -1500,7 +1557,7 @@ class _SpotHeader extends StatelessWidget {
         title.toUpperCase(),
         style: WaveType.overline.copyWith(
           fontSize: 9,
-          color: WaveColors.textTertiary,
+          color: waveTextTertiary(context),
         ),
       ),
     );
@@ -1538,8 +1595,9 @@ class _TabChipState extends State<_TabChip> {
           height: 26,
           padding: const EdgeInsets.symmetric(horizontal: 10),
           decoration: BoxDecoration(
-            color: Colors.white.withValues(
-              alpha: widget.selected ? 0.14 : _hover ? 0.06 : 0,
+            color: _spotlightWash(
+              context,
+              widget.selected ? 0.14 : _hover ? 0.06 : 0,
             ),
             borderRadius: BorderRadius.circular(WaveRadius.controls),
           ),
@@ -1551,8 +1609,8 @@ class _TabChipState extends State<_TabChip> {
                   ? FontWeight.w600
                   : FontWeight.w500,
               color: widget.selected
-                  ? WaveColors.textPrimary
-                  : WaveColors.textSecondary.withValues(alpha: 0.8),
+                  ? waveTextPrimary(context)
+                  : waveTextSecondary(context).withValues(alpha: 0.8),
             ),
           ),
         ),

@@ -415,8 +415,7 @@ class _FsIconButtonState extends State<_FsIconButton> {
     final accent = waveAccent(context);
     final color = widget.active
         ? accent
-        : (dark ? WaveColors.textPrimary : WaveColors.lightTextPrimary)
-            .withValues(alpha: _hover ? 1.0 : 0.92);
+        : waveTextPrimary(context).withValues(alpha: _hover ? 1.0 : 0.92);
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -859,6 +858,14 @@ class _TrackMetadataSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final dark = waveIsDark(context);
+    // Hero text over the ambient stage follows the theme text ramp: off-
+    // white in Midnight, ink in Pearl (the stage scrim is light there).
+    // The soft drop shadow only helps light text on dark artwork; on Pearl
+    // it would muddy the ink, so it is dark-only.
+    final textPrimary = waveTextPrimary(context);
+    final textShadow = dark
+        ? const [Shadow(color: Color(0x66000000), blurRadius: 10)]
+        : const <Shadow>[];
     final stream = ref.watch(
       playbackServiceProvider.select((s) => s.stream),
     );
@@ -876,10 +883,8 @@ class _TrackMetadataSection extends ConsumerWidget {
             fontSize: 26,
             fontWeight: FontWeight.w700,
             letterSpacing: -0.4,
-            color: Colors.white,
-            shadows: const [
-              Shadow(color: Color(0x66000000), blurRadius: 10),
-            ],
+            color: textPrimary,
+            shadows: textShadow,
           ),
         ),
         const SizedBox(height: 4),
@@ -895,10 +900,8 @@ class _TrackMetadataSection extends ConsumerWidget {
             style: WaveType.body.copyWith(
               fontSize: 16,
               fontWeight: FontWeight.w500,
-              color: Colors.white.withValues(alpha: 0.94),
-              shadows: const [
-                Shadow(color: Color(0x66000000), blurRadius: 10),
-              ],
+              color: textPrimary.withValues(alpha: 0.94),
+              shadows: textShadow,
             ),
           ),
         ),
@@ -911,10 +914,8 @@ class _TrackMetadataSection extends ConsumerWidget {
             textAlign: alignCenter ? TextAlign.center : TextAlign.start,
             style: WaveType.meta.copyWith(
               fontSize: 13,
-              color: Colors.white.withValues(alpha: 0.78),
-              shadows: const [
-                Shadow(color: Color(0x66000000), blurRadius: 10),
-              ],
+              color: textPrimary.withValues(alpha: 0.78),
+              shadows: textShadow,
             ),
           ),
         ],
@@ -929,9 +930,7 @@ class _TrackMetadataSection extends ConsumerWidget {
               style: WaveType.overline.copyWith(
                 fontSize: 9.5,
                 fontWeight: FontWeight.w700,
-                color: dark
-                    ? WaveColors.textPrimary
-                    : WaveColors.lightTextPrimary,
+                color: waveTextPrimary(context),
               ),
             ),
           ),
@@ -948,7 +947,6 @@ class _UpNextPill extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final dark = waveIsDark(context);
     final queue = ref.watch(playbackServiceProvider.select((s) => s.queue));
     final index = ref.watch(playbackServiceProvider.select((s) => s.currentIndex));
 
@@ -987,9 +985,7 @@ class _UpNextPill extends ConsumerWidget {
                     overflow: TextOverflow.ellipsis,
                     style: WaveType.meta.copyWith(
                       fontSize: 11,
-                      color: dark
-                          ? WaveColors.textPrimary
-                          : WaveColors.lightTextPrimary,
+                      color: waveTextPrimary(context),
                     ),
                   ),
                 ),
@@ -997,9 +993,7 @@ class _UpNextPill extends ConsumerWidget {
                 Icon(
                   FluentIcons.chevron_right,
                   size: 10,
-                  color: dark
-                      ? WaveColors.textSecondary
-                      : WaveColors.lightTextSecondary,
+                  color: waveTextSecondary(context),
                 ),
               ],
             ),

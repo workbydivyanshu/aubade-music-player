@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:aubade/core/artwork/accent_extraction.dart';
 import 'package:aubade/features/settings/system_accent.dart';
 import 'package:aubade/features/settings/theme_controller.dart';
+import 'package:aubade/ui/theme/fluent_theme.dart';
 import 'package:aubade/ui/theme/tokens.dart';
 
 void main() {
@@ -142,6 +143,24 @@ void main() {
 
     test('missing artwork falls back to the user/default accent', () {
       expect(state(source: 'artwork', dynamic: true).resolveAccent(), custom);
+    });
+  });
+
+  group('theme accent', () {
+    test('Pearl seeds from the one shipped accent, never a blue fallback', () {
+      final light = buildWaveFluentTheme(
+        accent: WaveColors.defaultAccent,
+        isLight: true,
+      );
+      expect(light.accentColor.normal, WaveColors.defaultAccent);
+    });
+
+    test('a fully transparent accent falls back to the shipped crimson', () {
+      final light = buildWaveFluentTheme(
+        accent: Colors.transparent,
+        isLight: true,
+      );
+      expect(light.accentColor.normal, WaveColors.defaultAccent);
     });
   });
 

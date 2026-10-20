@@ -612,10 +612,15 @@ class _WaveShellState extends ConsumerState<WaveShell> {
                                           child: Container(
                                             color: Colors.black
                                                 .withValues(alpha: 0.4),
-                                            child: const Center(
+                                            child: Center(
                                               child: Text(
                                                 'Drop audio files to play',
-                                                style: WaveType.sectionTitle,
+                                                // Intentional white: this is
+                                                // a dim scrim over both themes,
+                                                // not a theme surface.
+                                                style: WaveType.sectionTitle
+                                                    .copyWith(
+                                                        color: Colors.white),
                                               ),
                                             ),
                                           ),

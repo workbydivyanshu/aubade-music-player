@@ -161,6 +161,13 @@ class _MiniPlay extends StatelessWidget {
       required this.onTap});
   @override
   Widget build(BuildContext context) {
+    final dark = waveIsDark(context);
+    // Neutral off-white disc on Midnight; on Pearl the off-white would
+    // vanish into the white card, so the disc follows the accent and
+    // flips its glyph for contrast (same contract as the dock button).
+    final fill = dark ? WaveColors.neutralAccent : waveAccent(context);
+    final glyph =
+        fill.computeLuminance() > 0.5 ? Colors.black : Colors.white;
     return LWTooltip(
       message: playing ? 'Pause' : 'Play',
       child: MouseRegion(
@@ -170,19 +177,21 @@ class _MiniPlay extends StatelessWidget {
           child: Container(
             width: 32,
             height: 32,
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: WaveColors.neutralAccent,
+              color: fill,
+              border: dark ? null : Border.all(color: waveDivider(context)),
             ),
             child: Center(
               child: buffering
-                  ? const SizedBox(
+                  ? SizedBox(
                       width: 14,
                       height: 14,
                       child: ProgressRing(
                         strokeWidth: 2.5,
-                        activeColor: Colors.black,
-                        backgroundColor: Color(0x40000000),
+                        activeColor: glyph,
+                        backgroundColor:
+                            glyph.withValues(alpha: 0.25),
                       ),
                     )
                   : Icon(
@@ -190,7 +199,7 @@ class _MiniPlay extends StatelessWidget {
                           ? WaveIcons.pause
                           : WaveIcons.play,
                       size: 14,
-                      color: Colors.black,
+                      color: glyph,
                     ),
             ),
           ),
