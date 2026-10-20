@@ -405,7 +405,7 @@ class LWPlaybackButton extends StatelessWidget {
     const size = 40.0;
     final filled = primary;
     final bg = filled
-        ? WaveColors.defaultAccent
+        ? WaveColors.neutralAccent
         : Colors.transparent;
     final fg = filled
         ? Colors.black

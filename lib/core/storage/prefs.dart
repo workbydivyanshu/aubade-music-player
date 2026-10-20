@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../ui/theme/tokens.dart';
+
 /// Settings + session persistence.
 ///
 /// Key names mirror Kotlin LastWave `SettingsPreferences` /
@@ -256,7 +258,8 @@ class Prefs {
   String get accentMode => _sp.getString('lw_accent_mode') ?? 'manual';
   Future<void> setAccentMode(String v) => _sp.setString('lw_accent_mode', v);
 
-  int get accentColor => _sp.getInt('lw_accent') ?? 0xFFE03030;
+  int get accentColor =>
+      _sp.getInt('lw_accent') ?? WaveColors.defaultAccent.toARGB32();
   Future<void> setAccentColor(int v) => _sp.setInt('lw_accent', v);
 
   bool get dynamicNowPlaying => _sp.getBool('lw_dynamic_now_playing') ?? false;

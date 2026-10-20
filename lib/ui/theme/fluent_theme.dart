@@ -6,7 +6,7 @@ import 'tokens.dart';
 ///
 /// - Dark: charcoal smoked surfaces over native Mica (set in app/window.dart).
 /// - Light: pearl surfaces.
-/// - Accent: user accent from prefs, defaulting to neutral off-white
+/// - Accent: user accent from prefs, defaulting to the shipped crimson
 ///   ([WaveColors.defaultAccent]). No blue accent defaults anywhere.
 /// - Component radii follow [WaveRadius]: menus/popovers 7px, dialogs 10px
 ///   max, buttons/controls 5px. No pill buttons — pill shapes are reserved

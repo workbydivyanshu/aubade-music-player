@@ -2,7 +2,12 @@ import 'package:fluent_ui/fluent_ui.dart';
 
 import '../../../ui/theme/tokens.dart';
 
-/// Semantic Fluent surfaces — single source of truth for every page.
+/// Semantic Fluent surfaces — the single authoritative [LwColors] palette.
+///
+/// This is the only `LwColors` definition in the app. The retired ice-blue
+/// copy from `lib/design_system/tokens.dart` was merged into the legacy
+/// block at the bottom of this class; that file re-exports [LwColors] so
+/// its existing consumers keep compiling unchanged.
 ///
 /// New code should read surfaces through [LwSurfaces] (context-aware) or
 /// the raw [LwColors] constants below. Do NOT scatter hex literals in
@@ -37,14 +42,10 @@ class LwColors {
   static const surfacePlayer = WaveColors.dockTranslucent; // 0xF2141414
   static const surfaceSelection = WaveColors.accentDim; // ring + wash base
 
-  static const textPrimary = WaveColors.textPrimary;
-  static const textSecondary = WaveColors.textSecondary;
-  static const textTertiary = WaveColors.textTertiary;
-
   static const divider = WaveColors.outlineSoft; // #1F1F1F hairline
   static const dividerStrong = WaveColors.outline; // #2B2B2B
 
-  static const accent = WaveColors.defaultAccent; // off-white neutral
+  static const accent = WaveColors.defaultAccent; // shipped default (crimson)
   static const success = WaveColors.success;
   static const warn = WaveColors.warn;
   static const danger = WaveColors.danger;
@@ -56,11 +57,42 @@ class LwColors {
   static const lightSurfaceLayer2 = WaveColors.lightSurface; // #FFFFFF
   static const lightSurfaceFlyout = WaveColors.lightSurface;
   static const lightSurfacePlayer = WaveColors.lightSurface;
-  static const lightTextPrimary = WaveColors.lightTextPrimary;
-  static const lightTextSecondary = WaveColors.lightTextSecondary;
-  static const lightTextTertiary = WaveColors.lightTextTertiary;
   static const lightDivider = WaveColors.lightOutlineSoft;
   static const lightDividerStrong = WaveColors.lightOutline;
+
+  // -- Legacy kit palette (verbatim values, frozen) ------------------------
+  // `lib/design_system/components.dart` and
+  // `lib/features/lyrics/lyrics_view.dart` still paint the retired
+  // ice-blue palette below. Values are kept byte-for-byte so this token
+  // consolidation changes no pixels. New code must use the Wave tokens
+  // above (or [LwSurfaces]); the legacy block is deleted once those two
+  // surfaces are re-tokenised.
+  static const background = Color(0xFF070A12);
+  static const surface = Color(0xFF0D1119);
+  static const surfaceRaised = Color(0xFF131824);
+  static const surfaceOverlay = Color(0xFF1A2130);
+  static const outline = Color(0xFF26304A);
+  static const outlineSoft = Color(0xFF151C2C);
+
+  /// Fine luminous top edge used on floating docks / panels (8-10% white).
+  static const luminousEdge = Color(0x1AFFFFFF);
+
+  static const dockTranslucent = Color(0xE9131824);
+
+  // Legacy text ramp — intentionally not the Wave ramp (see waveText* in
+  // `lib/ui/theme/tokens.dart`); these consumers render the old values.
+  static const textPrimary = Color(0xFFF2F4F9);
+  static const textSecondary = Color(0xFFA7AEC0);
+  static const textTertiary = Color(0xFF6B7386);
+
+  static const lightSurface = Color(0xFFFFFFFF);
+  static const lightSurfaceOverlay = Color(0xFFE9EDF4);
+  static const lightOutline = Color(0xFFDDE3EE);
+  static const lightOutlineSoft = Color(0xFFEAEEF5);
+  static const lightTextPrimary = Color(0xFF0E131C);
+  static const lightTextSecondary = Color(0xFF4A5468);
+  static const lightTextTertiary = Color(0xFF8A94A8);
+  static const lightDockTranslucent = Color(0xF5FFFFFF);
 }
 
 /// Context-aware surface resolution (dark ↔ light).

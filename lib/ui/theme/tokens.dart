@@ -3,18 +3,19 @@ import 'package:fluent_ui/fluent_ui.dart';
 /// CANONICAL — all agents must import this, do NOT use LwColors/LwRadius.
 ///
 /// `lib/ui/theme/tokens.dart` is the single source of truth for the
-/// Aubade "Wave" design system. The legacy `lib/design_system/tokens.dart`
-/// (`LwColors` / `LwRadius` — ice-blue accent, 12–24px radii) is retired:
-/// do not import it from new code, do not copy values out of it.
+/// Aubade "Wave" design system. The deprecated `LwColors` alias lives in
+/// `lib/design_system/fluent/lw_colors.dart` (one definition, merged from
+/// the retired `lib/design_system/tokens.dart` copy); new code must not
+/// import it.
 ///
 /// Wave direction:
 /// - Neutral graphite base (#0E0E0E / #161616 / #1E1E1E), off-white text.
 /// - NO blue/navy theme, NO 20–30px radii, NO giant pills (pill shapes are
 ///   allowed ONLY for [WaveChip]-style chips and circular transport
 ///   buttons).
-/// - The base stays neutral; artwork drives personality. The off-white
-///   accent is used sparingly (play affordance, progress fill, selection),
-///   never as large tinted surfaces.
+/// - The base stays neutral; artwork drives personality. The accent is
+///   used sparingly (play affordance, progress fill, selection), never as
+///   large tinted surfaces.
 class WaveColors {
   WaveColors._();
 
@@ -40,9 +41,14 @@ class WaveColors {
   static const textSecondary = Color(0xFFA8A6A0);
   static const textTertiary = Color(0xFF6E6C66);
 
-  // Neutral accent — off-white. Play / progress / selected use this
-  // by default; artwork tint may override sparingly at runtime.
-  static const defaultAccent = Color(0xFFF5F4F0);
+  // Shipped accent default — crimson. This is the one first-open accent
+  // (`Prefs.accentColor` falls back to it); every blue/neutral swatch is an
+  // explicit user choice, never a second default.
+  static const defaultAccent = Color(0xFFE03030);
+
+  /// Designed neutral accent option (off-white) — selectable, not default.
+  static const neutralAccent = Color(0xFFF5F4F0);
+
   static const accentDim = Color(0xFF3A3A38);
   static const success = Color(0xFF7BE3A8);
   static const warn = Color(0xFFE0A030);

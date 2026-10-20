@@ -791,7 +791,7 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
                 fontWeight: FontWeight.w500,
                 color: WaveColors.textPrimary,
               ),
-              cursorColor: WaveColors.defaultAccent,
+              cursorColor: WaveColors.neutralAccent,
               onChanged: _onChanged,
               onSubmitted: (_) => _activate(rows),
             ),
@@ -841,7 +841,7 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
                   WaveIcons.search,
                   size: 14,
                   color:
-                      WaveColors.defaultAccent.withValues(alpha: 0.8),
+                      WaveColors.neutralAccent.withValues(alpha: 0.8),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -1163,7 +1163,7 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
               color: isSelected
-                  ? WaveColors.defaultAccent.withValues(alpha: 0.40)
+                  ? WaveColors.neutralAccent.withValues(alpha: 0.40)
                   : Colors.white.withValues(alpha: 0.08),
               width: 1,
             ),
@@ -1213,7 +1213,7 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: WaveColors.defaultAccent
+                            color: WaveColors.neutralAccent
                                 .withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(4),
                           ),
@@ -1223,7 +1223,7 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
                               fontSize: 9.5,
                               fontWeight: FontWeight.w700,
                               letterSpacing: 0.8,
-                              color: WaveColors.defaultAccent,
+                              color: WaveColors.neutralAccent,
                             ),
                           ),
                         ),
@@ -1270,7 +1270,7 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 decoration: BoxDecoration(
                   color: isSelected
-                      ? WaveColors.defaultAccent
+                      ? WaveColors.neutralAccent
                       : Colors.white.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(17),
                 ),
@@ -1433,7 +1433,7 @@ class _SpotRowState extends State<_SpotRow> {
                 height: 22,
                 decoration: BoxDecoration(
                   color: isSelected
-                      ? WaveColors.defaultAccent
+                      ? WaveColors.neutralAccent
                       : Colors.transparent,
                   borderRadius: const BorderRadius.only(
                     topRight: Radius.circular(2),

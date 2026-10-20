@@ -172,7 +172,7 @@ class _MiniPlay extends StatelessWidget {
             height: 32,
             decoration: const BoxDecoration(
               shape: BoxShape.circle,
-              color: WaveColors.defaultAccent,
+              color: WaveColors.neutralAccent,
             ),
             child: Center(
               child: buffering

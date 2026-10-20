@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
 
+// [LwColors] now has a single definition in
+// `lib/design_system/fluent/lw_colors.dart` (the Fluent alias palette).
+// Re-exported here so existing frozen-kit imports keep resolving.
+export 'fluent/lw_colors.dart' show LwColors;
+
 /// Aubade editorial design tokens — single source of spacing, radius,
 /// type, motion, density and breakpoint values.
 ///
@@ -13,60 +18,6 @@ import 'package:flutter/material.dart';
 /// - header 52px unifies identity + history + compact search
 /// - dock 76px three-zone replaces 96px bar
 /// - ledger rows 52px replace 60px boxed rows
-class LwColors {
-  LwColors._();
-
-  // -- Midnight (dark) ------------------------------------------------------
-  static const background = Color(0xFF070A12);
-  static const surface = Color(0xFF0D1119);
-  static const surfaceRaised = Color(0xFF131824);
-  static const surfaceOverlay = Color(0xFF1A2130);
-  static const outline = Color(0xFF26304A);
-  static const outlineSoft = Color(0xFF151C2C);
-
-  /// Fine luminous top edge used on floating docks / panels (8-10% white).
-  static const luminousEdge = Color(0x1AFFFFFF);
-
-  /// Smoked translucent panel tints (paint over Mica, never full-window).
-  static const scrim = Color(0xB3070A12);
-  static const panelTranslucent = Color(0xE60D1119);
-  static const dockTranslucent = Color(0xE9131824);
-
-  static const textPrimary = Color(0xFFF2F4F9);
-  static const textSecondary = Color(0xFFA7AEC0);
-  static const textTertiary = Color(0xFF6B7386);
-
-  static const defaultAccent = Color(0xFF7CC4FF);
-  static const hiRes = Color(0xFF7CC4FF);
-  static const losslessGreen = Color(0xFFC6F100);
-  static const warn = Color(0xFFE0A030);
-  static const danger = Color(0xFFE0506A);
-
-  static const List<Color> accentChoices = [
-    Color(0xFF7CC4FF), // ice blue (default)
-    Color(0xFFE03030), // crimson
-    Color(0xFF7C4DFF), // violet
-    Color(0xFF2196C6), // ocean
-    Color(0xFF6B9E6B), // sage
-    Color(0xFFE0A030), // amber
-    Color(0xFFE0507A), // rose
-  ];
-
-  // -- Pearl white (light) ---------------------------------------------------
-  static const lightBackground = Color(0xFFF4F6FA);
-  static const lightSurface = Color(0xFFFFFFFF);
-  static const lightSurfaceRaised = Color(0xFFFFFFFF);
-  static const lightSurfaceOverlay = Color(0xFFE9EDF4);
-  static const lightOutline = Color(0xFFDDE3EE);
-  static const lightOutlineSoft = Color(0xFFEAEEF5);
-  static const lightTextPrimary = Color(0xFF0E131C);
-  static const lightTextSecondary = Color(0xFF4A5468);
-  static const lightTextTertiary = Color(0xFF8A94A8);
-  static const lightScrim = Color(0xB3F4F6FA);
-  static const lightPanelTranslucent = Color(0xF2FFFFFF);
-  static const lightDockTranslucent = Color(0xF5FFFFFF);
-}
-
 class LwSpacing {
   LwSpacing._();
   static const double xxs = 4;
