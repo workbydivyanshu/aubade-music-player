@@ -448,9 +448,43 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Patch audiotags macOS bridge
+      - name: Patch audiotags macOS
         run: |
-          python3 -c "import glob; [open(f, 'w').write(open(f).read().replace('dummy_method_to_enforce_bundling()', '0')) for f in glob.glob('$HOME/.pub-cache/**/AudiotagsPlugin.swift', recursive=True)]"
+          for dir in "$HOME"/.pub-cache/hosted/pub.dev/audiotags-*; do
+            if [ -d "$dir/macos" ]; then
+              echo "Patching audiotags in $dir"
+              rm -f "$dir/macos/Classes/bridge_generated.h"
+              rm -f "$dir/macos/Runner/bridge_generated.h"
+              cat << 'EOF' > "$dir/macos/Classes/AudiotagsPlugin.swift"
+import Cocoa
+import FlutterMacOS
+
+public class AudiotagsPlugin: NSObject, FlutterPlugin {
+  public static func register(with registrar: FlutterPluginRegistrar) {
+    let channel = FlutterMethodChannel(name: "audiotags", binaryMessenger: registrar.messenger)
+    let instance = AudiotagsPlugin()
+    registrar.addMethodCallDelegate(instance, channel: channel)
+  }
+
+  public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "getPlatformVersion":
+      result("macOS " + ProcessInfo.processInfo.operatingSystemVersionString)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+EOF
+              mkdir -p "$dir/macos/Libs"
+              if [ ! -f "$dir/macos/Libs/libaudiotags.a" ]; then
+                echo "Pre-fetching libaudiotags.a for macOS..."
+                curl -sL https://github.com/erikas-taroza/audiotags/releases/download/v1.4.5/macos.zip -o "$dir/macos/Libs/macos.zip"
+                unzip -o "$dir/macos/Libs/macos.zip" -d "$dir/macos/Libs"
+                rm -f "$dir/macos/Libs/macos.zip"
+              fi
+            fi
+          done
 
       - name: Build macOS app
         run: flutter build macos --release
