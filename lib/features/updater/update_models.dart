@@ -41,7 +41,34 @@ enum UpdateStatus {
   available,
   downloading,
   readyToInstall,
+  installing,
+  readyToRelaunch,
   error,
+}
+
+/// Result of asking the OS package manager to install a downloaded update.
+enum InstallOutcome { installed, cancelled, failed }
+
+/// Maps a package-manager exit code to a dialog-friendly outcome.
+///
+/// `pkexec` uses 126 when the authentication dialog is dismissed and 127 when
+/// authorisation fails, so both are reported as a cancellation rather than a
+/// package-manager error.
+InstallOutcome installOutcomeForExitCode(int exitCode) {
+  if (exitCode == 0) return InstallOutcome.installed;
+  if (exitCode == 126 || exitCode == 127) return InstallOutcome.cancelled;
+  return InstallOutcome.failed;
+}
+
+/// Failure text rendered in the update dialog.
+String installFailureMessage(InstallOutcome outcome, {String? detail}) {
+  final cleaned = detail?.trim() ?? '';
+  final reason = outcome == InstallOutcome.cancelled
+      ? 'cancelled'
+      : cleaned.isNotEmpty
+      ? cleaned
+      : 'unknown error';
+  return "Update couldn't be installed — $reason";
 }
 
 /// Metadata describing a published release.
@@ -223,6 +250,26 @@ class UpdateState {
       downloadedFilePath: downloadedFilePath ?? this.downloadedFilePath,
       errorMessage: errorMessage ?? this.errorMessage,
       lastChecked: lastChecked ?? this.lastChecked,
+    );
+  }
+
+  /// Moves an installer from [UpdateStatus.installing] to its terminal state.
+  ///
+  /// Success opens the restart action; any failure keeps the downloaded file
+  /// path so the dialog can offer to open its containing folder.
+  UpdateState finishInstall(InstallOutcome outcome, {String? detail}) {
+    final installed = outcome == InstallOutcome.installed;
+    return UpdateState(
+      status: installed ? UpdateStatus.readyToRelaunch : UpdateStatus.error,
+      release: release,
+      progress: progress,
+      downloadedBytes: downloadedBytes,
+      totalBytes: totalBytes,
+      downloadedFilePath: downloadedFilePath,
+      errorMessage: installed
+          ? null
+          : installFailureMessage(outcome, detail: detail),
+      lastChecked: lastChecked,
     );
   }
 }

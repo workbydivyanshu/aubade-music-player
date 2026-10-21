@@ -1,6 +1,7 @@
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../features/updater/release_notes.dart';
 import '../../features/updater/update_models.dart';
 import '../../features/updater/update_service.dart';
 import '../theme/tokens.dart';
@@ -38,7 +39,10 @@ class _UpdateDialog extends ConsumerWidget {
 
     final isDownloading = state.status == UpdateStatus.downloading;
     final isReady = state.status == UpdateStatus.readyToInstall;
+    final isInstalling = state.status == UpdateStatus.installing;
+    final isRelaunchReady = state.status == UpdateStatus.readyToRelaunch;
     final isError = state.status == UpdateStatus.error;
+    final noteSpans = formatReleaseNotes(release?.notes ?? '');
 
     return ContentDialog(
       title: Row(
@@ -47,11 +51,15 @@ class _UpdateDialog extends ConsumerWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              isReady
-                  ? 'Update Ready: Aubade ${release?.version ?? ''}'
-                  : isDownloading
-                      ? 'Downloading Aubade ${release?.version ?? ''}'
-                      : 'Update Available: Aubade ${release?.version ?? ''}',
+              isRelaunchReady
+                  ? 'Update Installed: Aubade ${release?.version ?? ''}'
+                  : isInstalling
+                      ? 'Installing Aubade ${release?.version ?? ''}'
+                      : isReady
+                          ? 'Update Ready: Aubade ${release?.version ?? ''}'
+                          : isDownloading
+                              ? 'Downloading Aubade ${release?.version ?? ''}'
+                              : 'Update Available: Aubade ${release?.version ?? ''}',
               style: WaveType.sectionTitle,
             ),
           ),
@@ -97,7 +105,7 @@ class _UpdateDialog extends ConsumerWidget {
             const SizedBox(height: 12),
 
             // Release notes / Changelog
-            if (release?.notes.isNotEmpty ?? false) ...[
+            if (noteSpans.isNotEmpty) ...[
               const Text('What\'s New:', style: WaveType.trackTitle),
               const SizedBox(height: 6),
               Container(
@@ -109,8 +117,8 @@ class _UpdateDialog extends ConsumerWidget {
                   border: Border.all(color: waveDivider(context)),
                 ),
                 child: SingleChildScrollView(
-                  child: Text(
-                    release!.notes,
+                  child: Text.rich(
+                    TextSpan(children: noteSpans),
                     style: WaveType.body.copyWith(color: waveTextSecondary(context)),
                   ),
                 ),
@@ -140,6 +148,40 @@ class _UpdateDialog extends ConsumerWidget {
                   ),
                 ],
               ),
+            ] else if (isInstalling) ...[
+              Row(
+                children: [
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: ProgressRing(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('Requesting permission…', style: WaveType.body),
+                  ),
+                ],
+              ),
+            ] else if (isRelaunchReady) ...[
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: WaveColors.success.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(WaveRadius.controls),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(FluentIcons.check_mark, color: WaveColors.success, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Aubade ${release?.version ?? ''} is installed. Restart to finish.',
+                        style: WaveType.body.copyWith(color: WaveColors.success),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ] else if (isReady) ...[
               Container(
                 padding: const EdgeInsets.all(8),
@@ -165,12 +207,33 @@ class _UpdateDialog extends ConsumerWidget {
                 state.errorMessage ?? 'An error occurred during update.',
                 style: WaveType.meta.copyWith(color: WaveColors.danger),
               ),
+              if (state.downloadedFilePath != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'You can install the downloaded package manually.',
+                  style: WaveType.meta.copyWith(color: waveTextSecondary(context)),
+                ),
+              ],
             ],
           ],
         ),
       ),
       actions: [
-        if (!isDownloading) ...[
+        if (isInstalling)
+          const SizedBox.shrink()
+        else if (isRelaunchReady) ...[
+          Button(
+            onPressed: () {
+              updater.dismiss();
+              Navigator.of(context).pop();
+            },
+            child: const Text('Restart later'),
+          ),
+          FilledButton(
+            onPressed: () => updater.relaunch(),
+            child: const Text('Restart now'),
+          ),
+        ] else if (!isDownloading) ...[
           Button(
             onPressed: () {
               updater.dismiss();
@@ -178,6 +241,11 @@ class _UpdateDialog extends ConsumerWidget {
             },
             child: const Text('Later'),
           ),
+          if (isError && state.downloadedFilePath != null)
+            Button(
+              onPressed: () => updater.openDownloadFolder(),
+              child: const Text('Open folder'),
+            ),
           Button(
             onPressed: () => updater.openReleaseInBrowser(),
             child: const Text('View release'),
@@ -187,7 +255,7 @@ class _UpdateDialog extends ConsumerWidget {
               onPressed: () => updater.applyUpdate(),
               child: const Text('Install & Relaunch'),
             )
-          else
+          else if (!isError || state.downloadedFilePath == null)
             FilledButton(
               onPressed: () => updater.downloadUpdate(),
               child: const Text('Download & Update'),

@@ -18,10 +18,81 @@ const kUpdateRepoOwner = 'workbydivyanshu';
 const kUpdateRepoName = 'aubade-music-player';
 /// Only used when the runtime version can't be read; source of truth is
 /// pubspec.yaml.
-const kFallbackAppVersion = '1.0.2';
+const kFallbackAppVersion = '1.0.3';
 
 /// Minimum interval between automatic background update checks.
 const kBackgroundCheckInterval = Duration(hours: 12);
+
+/// A process invocation used to install a downloaded Linux package.
+class InstallCommand {
+  final String executable;
+  final List<String> arguments;
+
+  const InstallCommand(this.executable, this.arguments);
+}
+
+/// Builds the privileged install command for an RPM or DEB package.
+///
+/// Returns null for AppImages (installed without pkexec) and unknown types.
+InstallCommand? linuxInstallCommand(String filePath) {
+  final path = filePath.trim();
+  if (path.isEmpty) return null;
+
+  final lower = path.toLowerCase();
+  if (lower.endsWith('.rpm')) {
+    return InstallCommand('pkexec', ['rpm', '-Uvh', '--replacepkgs', path]);
+  }
+  if (lower.endsWith('.deb')) {
+    return InstallCommand('pkexec', ['dpkg', '-i', path]);
+  }
+  return null;
+}
+
+/// A process invocation used to relaunch the freshly installed app.
+class RelaunchCommand {
+  final String executable;
+  final List<String> arguments;
+
+  const RelaunchCommand(this.executable, this.arguments);
+}
+
+/// Builds the restart command from `Platform.resolvedExecutable`.
+///
+/// [preferredExecutable] lets AppImage installs relaunch the downloaded file.
+/// Falls back to [resolvedExecutable] when the preferred path is unusable and
+/// returns null when neither looks like a real app binary (for example a test
+/// runner), so callers can degrade to "Restart later" instead of spawning one.
+RelaunchCommand? buildRelaunchCommand({
+  required String resolvedExecutable,
+  String? preferredExecutable,
+}) {
+  RelaunchCommand? commandFor(String? path) {
+    final trimmed = path?.trim() ?? '';
+    if (trimmed.isEmpty) return null;
+
+    final name = trimmed.split(RegExp(r'[/\\]')).last.toLowerCase();
+    if (name.isEmpty ||
+        name == 'flutter_tester' ||
+        name == 'dart' ||
+        name == 'dartaotruntime') {
+      return null;
+    }
+    return RelaunchCommand(trimmed, const []);
+  }
+
+  return commandFor(preferredExecutable) ?? commandFor(resolvedExecutable);
+}
+
+/// Last useful line of a package-manager failure, or its exit code.
+String? _processDetail(ProcessResult result) {
+  final stderr = result.stderr.toString().trim();
+  if (stderr.isNotEmpty) return stderr.split('\n').last.trim();
+
+  final stdout = result.stdout.toString().trim();
+  if (stdout.isNotEmpty) return stdout.split('\n').last.trim();
+
+  return 'exit code ${result.exitCode}';
+}
 
 final updateServiceProvider =
     StateNotifierProvider<UpdateService, UpdateState>((ref) {
@@ -201,11 +272,21 @@ class UpdateService extends StateNotifier<UpdateState> {
     }
   }
 
-  /// Launches or executes the downloaded installer / package.
+  /// Installs the downloaded update and reports the outcome in [state].
+  ///
+  /// Linux RPM/DEB installs go through pkexec so the user sees the system
+  /// permission prompt; AppImages are made executable in place. Windows and
+  /// macOS keep their existing installer launch behaviour.
   Future<void> applyUpdate() async {
     final filePath = state.downloadedFilePath;
     if (filePath == null || !File(filePath).existsSync()) {
-      await openReleaseInBrowser();
+      await openDownloadFolder();
+      return;
+    }
+
+    if (Platform.isLinux) {
+      state = state.copyWith(status: UpdateStatus.installing);
+      await _applyLinuxUpdate(filePath);
       return;
     }
 
@@ -221,28 +302,6 @@ class UpdateService extends StateNotifier<UpdateState> {
           );
           exit(0);
         }
-      } else if (Platform.isLinux) {
-        if (filePath.endsWith('.rpm')) {
-          // Try pkexec rpm -Uvh or launch file with default installer
-          try {
-            await Process.start(
-              'pkexec',
-              ['rpm', '-Uvh', filePath],
-              mode: ProcessStartMode.detached,
-            );
-            return;
-          } catch (_) {
-            // Fall back to opening with xdg-open (GNOME Software)
-            await Process.start('xdg-open', [filePath], mode: ProcessStartMode.detached);
-          }
-        } else if (filePath.endsWith('.AppImage')) {
-          // Make executable and launch
-          await Process.run('chmod', ['+x', filePath]);
-          await Process.start(filePath, [], mode: ProcessStartMode.detached);
-          exit(0);
-        } else {
-          await Process.start('xdg-open', [filePath], mode: ProcessStartMode.detached);
-        }
       } else if (Platform.isMacOS) {
         if (filePath.endsWith('.dmg')) {
           await Process.run('open', [filePath]);
@@ -250,6 +309,98 @@ class UpdateService extends StateNotifier<UpdateState> {
       }
     } catch (e) {
       // If launching fails, open download folder or browser
+      await openReleaseInBrowser();
+    }
+  }
+
+  Future<void> _applyLinuxUpdate(String filePath) async {
+    if (filePath.toLowerCase().endsWith('.appimage')) {
+      try {
+        final result = await Process.run('chmod', ['+x', filePath]);
+        state = result.exitCode == 0
+            ? state.finishInstall(InstallOutcome.installed)
+            : state.finishInstall(
+                InstallOutcome.failed,
+                detail: _processDetail(result),
+              );
+      } catch (e) {
+        state = state.finishInstall(InstallOutcome.failed, detail: '$e');
+      }
+      return;
+    }
+
+    final command = linuxInstallCommand(filePath);
+    if (command == null) {
+      state = state.finishInstall(
+        InstallOutcome.failed,
+        detail: 'unsupported package type',
+      );
+      return;
+    }
+
+    try {
+      final result = await Process.run(command.executable, command.arguments);
+      state = state.finishInstall(
+        installOutcomeForExitCode(result.exitCode),
+        detail: _processDetail(result),
+      );
+    } on ProcessException catch (e) {
+      state = state.finishInstall(
+        InstallOutcome.failed,
+        detail: e.message.isEmpty ? 'pkexec unavailable' : e.message,
+      );
+    } catch (e) {
+      state = state.finishInstall(InstallOutcome.failed, detail: '$e');
+    }
+  }
+
+  /// Relaunches the freshly installed binary, then exits this process.
+  Future<void> relaunch() async {
+    final filePath = state.downloadedFilePath;
+    final isAppImage =
+        filePath != null && filePath.toLowerCase().endsWith('.appimage');
+    final command = buildRelaunchCommand(
+      resolvedExecutable: Platform.resolvedExecutable,
+      preferredExecutable: isAppImage ? filePath : null,
+    );
+
+    if (command == null) {
+      state = state.copyWith(
+        errorMessage: 'Restart Aubade manually to finish the update.',
+      );
+      return;
+    }
+
+    try {
+      await Process.start(
+        command.executable,
+        command.arguments,
+        mode: ProcessStartMode.detached,
+      );
+      exit(0);
+    } catch (e) {
+      state = state.copyWith(errorMessage: 'Could not restart Aubade: $e');
+    }
+  }
+
+  /// Opens the folder containing the downloaded installer.
+  Future<void> openDownloadFolder() async {
+    final filePath = state.downloadedFilePath;
+    if (filePath == null || filePath.isEmpty) {
+      await openReleaseInBrowser();
+      return;
+    }
+
+    final folder = p.dirname(filePath);
+    try {
+      if (Platform.isWindows) {
+        await Process.run('explorer', [folder]);
+      } else if (Platform.isMacOS) {
+        await Process.run('open', [folder]);
+      } else {
+        await Process.run('xdg-open', [folder]);
+      }
+    } catch (_) {
       await openReleaseInBrowser();
     }
   }
