@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../../core/constants/app_links.dart';
 import '../../core/storage/prefs.dart';
 import '../../features/home/home_providers.dart';
 import '../../features/lastfm/auth_repository.dart';
@@ -13,15 +14,12 @@ import '../theme/wave_icons.dart';
 
 const _lastFmApiAccountUrl = 'https://www.last.fm/api/account/create';
 
-const _githubUrl =
-    'https://github.com/workbydivyanshu/aubade-music-player';
-
 /// Mandatory Last.fm entry screen.
 ///
 /// Rendered OUTSIDE the main shell: when there is no valid stored
 /// session, this is the entire application — no Home, no player, no
 /// navigation behind it. Authentication is the only way in; the
-/// GitHub star action is strictly optional and secondary.
+/// website link is strictly optional and secondary.
 class WaveWelcomePage extends ConsumerStatefulWidget {
   const WaveWelcomePage({super.key});
 
@@ -103,8 +101,8 @@ class _WaveWelcomePageState
     }
   }
 
-  Future<void> _openGitHub() async {
-    final uri = Uri.parse(_githubUrl);
+  Future<void> _openWebsite() async {
+    final uri = Uri.parse(kLandingUrl);
     try {
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri,
@@ -147,7 +145,7 @@ class _WaveWelcomePageState
                             onConnect: _beginWebAuth,
                             onFinish: _completeWebAuth,
                             onSkip: _enterGuest,
-                            onGitHub: _openGitHub,
+                            onWebsite: _openWebsite,
                           ),
                         ),
                       ),
@@ -167,7 +165,7 @@ class _WaveWelcomePageState
                           onConnect: _beginWebAuth,
                           onFinish: _completeWebAuth,
                           onSkip: _enterGuest,
-                          onGitHub: _openGitHub,
+                          onWebsite: _openWebsite,
                         ),
                       ],
                     ),
@@ -558,7 +556,7 @@ class _EqualizerRow extends StatelessWidget {
 
 /// Right / auth area: product name, why Last.fm, primary connect,
 ///
-/// supporting text, and the optional GitHub star action.
+/// supporting text, and the optional website link.
 class _AuthPanel extends ConsumerWidget {
   final WebAuthHandshake? handshake;
   final bool busy;
@@ -566,7 +564,7 @@ class _AuthPanel extends ConsumerWidget {
   final VoidCallback onConnect;
   final VoidCallback onFinish;
   final VoidCallback onSkip;
-  final VoidCallback onGitHub;
+  final VoidCallback onWebsite;
   const _AuthPanel({
     required this.handshake,
     required this.busy,
@@ -574,7 +572,7 @@ class _AuthPanel extends ConsumerWidget {
     required this.onConnect,
     required this.onFinish,
     required this.onSkip,
-    required this.onGitHub,
+    required this.onWebsite,
   });
 
   @override
@@ -759,14 +757,14 @@ class _AuthPanel extends ConsumerWidget {
           ),
           const SizedBox(height: 14),
           HyperlinkButton(
-            onPressed: onGitHub,
+            onPressed: onWebsite,
             child: const Row(
               mainAxisSize: MainAxisSize.min,
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(FluentIcons.favorite_star, size: 14),
+                Icon(WaveIcons.discover, size: 14),
                 SizedBox(width: 6),
-                Text('Star Aubade on GitHub'),
+                Text('Visit the website'),
               ],
             ),
           ),

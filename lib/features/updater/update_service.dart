@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/constants/app_links.dart';
 import '../../core/network/dio_factory.dart';
 import 'update_models.dart';
 
@@ -17,7 +18,7 @@ const kUpdateRepoOwner = 'workbydivyanshu';
 const kUpdateRepoName = 'aubade-music-player';
 /// Only used when the runtime version can't be read; source of truth is
 /// pubspec.yaml.
-const kFallbackAppVersion = '1.0.1';
+const kFallbackAppVersion = '1.0.2';
 
 /// Minimum interval between automatic background update checks.
 const kBackgroundCheckInterval = Duration(hours: 12);
@@ -77,7 +78,7 @@ class UpdateService extends StateNotifier<UpdateState> {
     }
   }
 
-  /// Checks GitHub for the latest release.
+  /// Checks the release feed for the latest version.
   /// If [force] is false and we checked recently, skips the network call.
   Future<void> checkForUpdates({bool force = false}) async {
     final now = DateTime.now();
@@ -93,7 +94,7 @@ class UpdateService extends StateNotifier<UpdateState> {
       final response = await _dio.get<Map<String, dynamic>>(
         'https://api.github.com/repos/$kUpdateRepoOwner/$kUpdateRepoName/releases/latest',
         options: Options(
-          headers: {'Accept': 'application/vnd.github.v3+json'},
+          headers: {'Accept': 'application/json'},
         ),
       );
 
@@ -253,11 +254,9 @@ class UpdateService extends StateNotifier<UpdateState> {
     }
   }
 
-  /// Opens the release page in the default web browser.
+  /// Opens the download page in the default web browser.
   Future<void> openReleaseInBrowser() async {
-    final url = state.release?.htmlUrl ??
-        'https://github.com/$kUpdateRepoOwner/$kUpdateRepoName/releases/latest';
-    final uri = Uri.parse(url);
+    final uri = Uri.parse(kLandingDownloadUrl);
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     }

@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/window.dart';
 import '../../app/auth_gate.dart';
+import '../../core/constants/app_links.dart';
 import '../../core/env/app_env.dart';
 import '../../core/storage/prefs.dart';
 import '../../features/addons/addon_api.dart';
@@ -1219,7 +1220,6 @@ class _About extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    const repo = 'https://github.com/workbydivyanshu/aubade-music-player';
     final version = ref.watch(packageInfoProvider).asData?.value.version;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1256,18 +1256,18 @@ class _About extends ConsumerWidget {
                 runSpacing: WaveSpacing.x4,
                 children: [
                   Button(
-                    onPressed: () => _open(repo),
+                    onPressed: () => _open(kLandingUrl),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(FluentIcons.open_in_new_window, size: 14),
                         SizedBox(width: 6),
-                        Text('GitHub repository'),
+                        Text('Website'),
                       ],
                     ),
                   ),
                   Button(
-                    onPressed: () => _open('$repo/issues/new'),
+                    onPressed: () => _open(kLandingUrl),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1278,7 +1278,7 @@ class _About extends ConsumerWidget {
                     ),
                   ),
                   Button(
-                    onPressed: () => _open(repo),
+                    onPressed: () => _open(kLandingUrl),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1289,7 +1289,7 @@ class _About extends ConsumerWidget {
                     ),
                   ),
                   Button(
-                    onPressed: () => _open('$repo/blob/HEAD/LICENSE'),
+                    onPressed: () => _open(kLandingUrl),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [

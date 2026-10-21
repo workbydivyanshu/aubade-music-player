@@ -44,7 +44,7 @@ enum UpdateStatus {
   error,
 }
 
-/// Metadata describing a release published on GitHub.
+/// Metadata describing a published release.
 @immutable
 class AppReleaseInfo {
   final String tagName;
@@ -103,7 +103,7 @@ class AppReleaseInfo {
     final assets = json['assets'] as List<dynamic>? ?? const [];
     if (isLinux) {
       // Walk the distro's preference order, so the first matching extension
-      // wins regardless of the order assets appear in the GitHub payload.
+      // wins regardless of the order assets appear in the API payload.
       final preference = preferAssetOrder(osRelease);
       for (final ext in preference) {
         for (final a in assets) {

@@ -81,7 +81,7 @@ class _UpdateDialog extends ConsumerWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      release?.assetName ?? 'Official GitHub Package',
+                      release?.assetName ?? 'Official Package',
                       style: WaveType.body.copyWith(fontWeight: FontWeight.w600),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -180,7 +180,7 @@ class _UpdateDialog extends ConsumerWidget {
           ),
           Button(
             onPressed: () => updater.openReleaseInBrowser(),
-            child: const Text('View on GitHub'),
+            child: const Text('View release'),
           ),
           if (isReady)
             FilledButton(
