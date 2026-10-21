@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:aubade/core/audio/stream_models.dart';
+import 'package:aubade/core/constants/app_links.dart';
 import 'package:aubade/features/player/player_state.dart';
 import 'package:aubade/features/presence/discord_ipc.dart';
 import 'package:aubade/features/presence/discord_presence_service.dart';
@@ -132,15 +133,17 @@ void main() {
     expect(activity?['state'], 'Test Album');
     expect(activity?['type'], 2);
     final ts = activity?['timestamps'] as Map;
-    // Start-only timestamp, seconds since epoch, back-dated by position.
-    expect(ts.keys, ['start']);
+    // Start back-dated by position, end at the track's duration.
+    expect(ts.keys, ['start', 'end']);
     expect(ts['start'], _now.millisecondsSinceEpoch ~/ 1000 - 10);
+    expect(ts['end'], (ts['start'] as int) + 200);
     final assets = activity?['assets'] as Map;
     expect(assets['large_image'], 'https://cdn.example/cover.jpg');
     expect(assets['large_text'], 'Test Album');
-    // Daemon shape: no buttons, no small asset, no instance flag.
-    expect(activity?.containsKey('buttons'), isFalse);
-    expect(assets.containsKey('small_image'), isFalse);
+    expect(assets['small_image'], 'logo');
+    expect(assets['small_text'], 'Aubade');
+    // Presence upgrade shape: one site button, no instance flag.
+    expect(activity?['buttons'], hasLength(1));
     expect(activity?.containsKey('instance'), isFalse);
   });
 
@@ -218,6 +221,164 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
+  // Presence upgrade: button, timestamps, album dedupe, small image
+  // ---------------------------------------------------------------------------
+
+  test('payload carries exactly the site download button', () {
+    final activity = DiscordPresenceService.buildActivity(
+      _track(artworkUrl: 'https://cdn.example/cover.jpg'),
+      _snap(_track(artworkUrl: 'https://cdn.example/cover.jpg')),
+      _now,
+    );
+    final buttons = activity?['buttons'] as List;
+    expect(buttons, hasLength(1));
+    final button = buttons.single as Map;
+    expect(button['label'], 'Get Aubade');
+    expect(button['url'], 'https://aubadehq.vercel.app/download');
+    expect(button['url'], kLandingDownloadUrl);
+    expect(activity.toString().toLowerCase(), isNot(contains('github')));
+  });
+
+  test('timestamps end at start plus the track duration', () {
+    final activity = DiscordPresenceService.buildActivity(
+      _track(),
+      _snap(_track(),
+          position: const Duration(seconds: 42),
+          duration: const Duration(minutes: 3, seconds: 15)),
+      _now,
+    );
+    final ts = activity?['timestamps'] as Map;
+    final start = _now.millisecondsSinceEpoch ~/ 1000 - 42;
+    expect(ts['start'], start);
+    expect(ts['end'], start + 195);
+  });
+
+  test('timestamps cap the position at the track duration', () {
+    final activity = DiscordPresenceService.buildActivity(
+      _track(),
+      _snap(_track(),
+          position: const Duration(seconds: 300),
+          duration: const Duration(seconds: 200)),
+      _now,
+    );
+    final ts = activity?['timestamps'] as Map;
+    final start = _now.millisecondsSinceEpoch ~/ 1000 - 200;
+    expect(ts['start'], start);
+    expect(ts['end'], start + 200);
+  });
+
+  test('pause drops start and end together', () {
+    final activity = DiscordPresenceService.buildActivity(
+      _track(),
+      _snap(_track(),
+          isPlaying: false,
+          position: const Duration(seconds: 42),
+          duration: const Duration(minutes: 3)),
+      _now,
+    );
+    expect(activity?.containsKey('timestamps'), isFalse);
+    expect(activity?['state'], 'Paused - Test Album');
+  });
+
+  test('album equal to the title is dropped while playing', () {
+    final activity = DiscordPresenceService.buildActivity(
+      _track(title: 'Same Name', artist: 'Band', album: 'Same Name'),
+      _snap(_track(title: 'Same Name', artist: 'Band', album: 'Same Name')),
+      _now,
+    );
+    expect(activity?.containsKey('state'), isFalse);
+    expect((activity?['assets'] as Map)['large_text'], 'Same Name');
+  });
+
+  test('album equal to the artist is dropped while playing', () {
+    final activity = DiscordPresenceService.buildActivity(
+      _track(title: 'Song', artist: 'The Band', album: 'The Band'),
+      _snap(_track(title: 'Song', artist: 'The Band', album: 'The Band')),
+      _now,
+    );
+    expect(activity?.containsKey('state'), isFalse);
+  });
+
+  test('album dedupe trims and ignores case', () {
+    final activity = DiscordPresenceService.buildActivity(
+      _track(title: 'Test Song', artist: 'Test Artist', album: '  test song  '),
+      _snap(_track(
+          title: 'Test Song', artist: 'Test Artist', album: '  test song  ')),
+      _now,
+    );
+    expect(activity?.containsKey('state'), isFalse);
+  });
+
+  test('a normal album stays in the state line', () {
+    final activity = DiscordPresenceService.buildActivity(
+      _track(title: 'Song', artist: 'Band', album: 'Real Album'),
+      _snap(_track(title: 'Song', artist: 'Band', album: 'Real Album')),
+      _now,
+    );
+    expect(activity?['state'], 'Real Album');
+  });
+
+  test('one character albums are padded for Discord', () {
+    final playing = DiscordPresenceService.buildActivity(
+      _track(title: 'Song', artist: 'Band', album: 'X'),
+      _snap(_track(title: 'Song', artist: 'Band', album: 'X')),
+      _now,
+    );
+    expect(playing?['state'], 'X ');
+    final paused = DiscordPresenceService.buildActivity(
+      _track(title: 'Song', artist: 'Band', album: 'X'),
+      _snap(_track(title: 'Song', artist: 'Band', album: 'X'),
+          isPlaying: false),
+      _now,
+    );
+    expect(paused?['state'], 'Paused - X ');
+  });
+
+  test('small logo overlay appears only for http(s) artwork', () {
+    for (final art in <String>[
+      'https://cdn.example/cover.jpg',
+      'http://cdn.example/cover.jpg',
+    ]) {
+      final activity = DiscordPresenceService.buildActivity(
+        _track(artworkUrl: art),
+        _snap(_track(artworkUrl: art)),
+        _now,
+      );
+      final assets = activity?['assets'] as Map;
+      expect(assets['small_image'], 'logo', reason: art);
+      expect(assets['small_text'], 'Aubade', reason: art);
+    }
+    for (final art in <String>[
+      '',
+      'blob:http://localhost:5199/abc',
+      'file:///home/user/cover.png',
+    ]) {
+      final activity = DiscordPresenceService.buildActivity(
+        _track(artworkUrl: art),
+        _snap(_track(artworkUrl: art)),
+        _now,
+      );
+      final assets = activity?['assets'] as Map;
+      expect(assets['large_image'], 'logo', reason: art);
+      expect(assets.containsKey('small_image'), isFalse, reason: art);
+      expect(assets.containsKey('small_text'), isFalse, reason: art);
+    }
+  });
+
+  test('status_display_type follows the member list pref', () {
+    expect(DiscordPresenceService.statusDisplayTypeFor('title'), 2);
+    expect(DiscordPresenceService.statusDisplayTypeFor('album'), 3);
+    expect(DiscordPresenceService.statusDisplayTypeFor('unknown'), 2);
+    final titleMode = DiscordPresenceService.buildActivity(
+        _track(), _snap(_track()), _now);
+    expect(titleMode?['status_display_type'], 2);
+    final albumMode = DiscordPresenceService.buildActivity(
+        _track(), _snap(_track()), _now,
+        statusDisplayType: DiscordPresenceService.statusDisplayAlbum);
+    expect(albumMode?['status_display_type'], 3);
+  });
+
+  // ---------------------------------------------------------------------------
   // Push gating: throttle, self-heal refresh, rate-limit backoff
   // ---------------------------------------------------------------------------
 
@@ -267,6 +428,79 @@ void main() {
             backoffUntil: now.subtract(const Duration(seconds: 1)),
             now: now),
         isTrue);
+  });
+
+  test('seek drift beyond 3s bypasses the throttle', () {
+    final now = DateTime.now();
+    final justPushed = now.subtract(const Duration(seconds: 1));
+    expect(
+        DiscordPresenceService.shouldPush(
+            changed: false,
+            lastPush: justPushed,
+            backoffUntil: null,
+            now: now,
+            driftSeconds: const Duration(seconds: 4)),
+        isTrue);
+    expect(
+        DiscordPresenceService.shouldPush(
+            changed: false,
+            lastPush: justPushed,
+            backoffUntil: null,
+            now: now,
+            driftSeconds: const Duration(seconds: -4)),
+        isTrue);
+    expect(
+        DiscordPresenceService.shouldPush(
+            changed: false,
+            lastPush: justPushed,
+            backoffUntil: null,
+            now: now,
+            driftSeconds: const Duration(seconds: 3)),
+        isFalse);
+    // A changed key keeps the normal 5s throttle even with drift.
+    expect(
+        DiscordPresenceService.shouldPush(
+            changed: true,
+            lastPush: justPushed,
+            backoffUntil: null,
+            now: now,
+            driftSeconds: const Duration(seconds: 9)),
+        isFalse);
+  });
+
+  test('first send is deferred before the track reaches 2s', () {
+    expect(
+        DiscordPresenceService.shouldDeferFirstSend(
+            position: const Duration(milliseconds: 1500),
+            keyChanged: false),
+        isTrue);
+    expect(
+        DiscordPresenceService.shouldDeferFirstSend(
+            position: const Duration(seconds: 2), keyChanged: false),
+        isFalse);
+    // A new key takes over immediately, even before 2s.
+    expect(
+        DiscordPresenceService.shouldDeferFirstSend(
+            position: const Duration(milliseconds: 1500),
+            keyChanged: true),
+        isFalse);
+  });
+
+  test('reconnect backoff escalates and resets on success', () {
+    final backoff = ReconnectBackoff();
+    expect(backoff.delay, const Duration(seconds: 15));
+    // First retry after a failure stays at 15s.
+    backoff.recordFailure();
+    expect(backoff.delay, const Duration(seconds: 15));
+    backoff.recordFailure();
+    expect(backoff.delay, const Duration(seconds: 25));
+    backoff.recordFailure();
+    expect(backoff.delay, const Duration(seconds: 40));
+    backoff.recordFailure();
+    expect(backoff.delay, const Duration(seconds: 40));
+    backoff.recordSuccess();
+    expect(backoff.delay, const Duration(seconds: 15));
+    expect(backoff.failures, 0);
   });
 
   // ---------------------------------------------------------------------------

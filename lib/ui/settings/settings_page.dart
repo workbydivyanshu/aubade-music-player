@@ -1478,6 +1478,44 @@ class _General extends ConsumerWidget {
                 subtitle:
                     'Show the current track in your Discord status.',
               ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Member list shows',
+                          style: WaveType.trackTitle,
+                        ),
+                        Text(
+                          'Which line Discord shows under your name.',
+                          style: WaveType.meta.copyWith(
+                            color: waveTextSecondary(context),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  ComboBox<String>(
+                    value: prefs.discordMemberListDisplay,
+                    items: const [
+                      ComboBoxItem(value: 'title', child: Text('Title')),
+                      ComboBoxItem(value: 'album', child: Text('Album')),
+                    ],
+                    onChanged: (v) async {
+                      if (v == null) return;
+                      await onUpdate(
+                          (p) => p.setDiscordMemberListDisplay(v));
+                      try {
+                        ref.read(discordPresenceProvider).refresh();
+                      } catch (_) {}
+                    },
+                  ),
+                ],
+              ),
             ],
           ),
         ),

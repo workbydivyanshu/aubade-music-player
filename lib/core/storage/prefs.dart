@@ -516,6 +516,17 @@ class Prefs {
   Future<void> setDiscordRichPresence(bool v) =>
       _sp.setBool('aubade_discord_rich_presence', v);
 
+  /// What Discord's member list shows: `'title'` (default) or `'album'`.
+  String get discordMemberListDisplay {
+    final v = _sp.getString('aubade_discord_member_list_display');
+    return v == 'album' ? 'album' : 'title';
+  }
+
+  Future<void> setDiscordMemberListDisplay(String v) => _sp.setString(
+        'aubade_discord_member_list_display',
+        v == 'album' ? 'album' : 'title',
+      );
+
   // -- Addon sources (personal addon URLs) ----------------------------------
   /// User-pasted addon roots (`{base}/a/<token>/`), JSON-encoded.
   List<String> get addonUrls {
