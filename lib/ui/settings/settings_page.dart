@@ -1282,17 +1282,6 @@ class _About extends ConsumerWidget {
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(FluentIcons.favorite_star, size: 14),
-                        SizedBox(width: 6),
-                        Text('Star / support the project'),
-                      ],
-                    ),
-                  ),
-                  Button(
-                    onPressed: () => _open(kLandingUrl),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
                         Icon(FluentIcons.page, size: 14),
                         SizedBox(width: 6),
                         Text('View License'),
