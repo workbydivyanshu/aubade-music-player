@@ -1,10 +1,10 @@
 [Desktop Entry]
 Name=Aubade
 Comment=from an audiophile to an audiophile. a local first music player
-Exec=/usr/bin/aubade %U
+Exec=/usr/bin/aubade %F
 Icon=aubade
 Terminal=false
 Type=Application
 Categories=Audio;Music;Player;AudioVideo;
 StartupWMClass=com.aubade.desktop
-MimeType=audio/flac;audio/mp3;audio/x-matroska;audio/ogg;audio/wav;audio/aac;audio/m4a;
+MimeType=audio/mpeg;audio/flac;audio/ogg;audio/opus;audio/x-opus+ogg;audio/mp4;audio/x-m4a;audio/wav;audio/x-wav;audio/vnd.wave;audio/aiff;audio/x-aiff;audio/x-ape;audio/x-ms-wma;audio/x-musepack;audio/x-matroska;audio/aac;audio/x-flac;

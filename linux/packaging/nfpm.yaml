@@ -38,8 +38,19 @@ contents:
   # Desktop integration.
   - src: linux/packaging/aubade.desktop
     dst: /usr/share/applications/aubade.desktop
+  # Dolphin / Konqueror "Open in Aubade" service menu. KIO refuses to
+  # load service menus that are not executable.
+  - src: linux/packaging/aubade-servicemenu.desktop
+    dst: /usr/share/kio/servicemenus/aubade-servicemenu.desktop
+    file_info:
+      mode: 0755
   - src: aubade-logo.png
     dst: /usr/share/icons/hicolor/512x512/apps/aubade.png
+
+# Refresh the desktop database after install so the new MIME claims are
+# picked up without a logout. Applies to both deb (postinst) and rpm (%post).
+scripts:
+  postinstall: linux/packaging/postinst
 
 overrides:
   deb:

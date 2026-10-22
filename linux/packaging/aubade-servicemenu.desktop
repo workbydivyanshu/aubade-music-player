@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Service
+MimeType=audio/mpeg;audio/flac;audio/ogg;audio/opus;audio/x-opus+ogg;audio/mp4;audio/x-m4a;audio/wav;audio/x-wav;audio/vnd.wave;audio/aiff;audio/x-aiff;audio/x-ape;audio/x-ms-wma;audio/x-musepack;audio/x-matroska;audio/aac;audio/x-flac;
+Actions=openInAubade
+X-KDE-Priority=TopLevel
+X-KDE-StartupNotify=false
+Icon=aubade
+
+[Desktop Action openInAubade]
+Name=Open in Aubade
+Icon=aubade
+Exec=aubade %F
