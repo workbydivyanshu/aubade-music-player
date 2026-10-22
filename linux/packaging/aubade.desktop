@@ -7,4 +7,4 @@ Terminal=false
 Type=Application
 Categories=Audio;Music;AudioVideo;
 StartupWMClass=com.aubade.desktop
-MimeType=audio/mpeg;audio/flac;audio/ogg;audio/opus;audio/x-opus+ogg;audio/mp4;audio/x-m4a;audio/wav;audio/x-wav;audio/vnd.wave;audio/aiff;audio/x-aiff;audio/x-ape;audio/x-ms-wma;audio/x-musepack;audio/x-matroska;audio/aac;audio/x-flac;
+MimeType=audio/mpeg;audio/flac;audio/ogg;audio/opus;audio/x-opus+ogg;audio/mp4;audio/x-m4a;audio/wav;audio/x-wav;audio/vnd.wave;audio/aiff;audio/x-aiff;audio/x-ape;audio/x-ms-wma;audio/x-musepack;audio/x-wavpack;audio/x-matroska;audio/aac;audio/x-flac;
