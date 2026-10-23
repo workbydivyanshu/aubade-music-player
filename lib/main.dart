@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:media_kit/media_kit.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'app/open_with.dart';
@@ -47,12 +46,14 @@ Future<void> main(List<String> args) async {
   PaintingBinding.instance.imageCache.maximumSize = 200;
   PaintingBinding.instance.imageCache.maximumSizeBytes =
       50 << 20; // 50 MiB
-  // Single persistent media_kit/libmpv backend (Limusic parity is
-  // configured Dart-side in PlaybackService.ensurePlayer: audio-only
-  // vo=null, 32MiB demuxer cache, on-disk cache, gapless-audio).
-  // Windows bundles libmpv via media_kit_libs_video — no Rust, no
-  // C++ changes required (profiling shows no native bottleneck).
-  MediaKit.ensureInitialized();
+  // libmpv is deliberately NOT dlopened here. MediaKit.ensureInitialized()
+  // just dlopens a multi-MB .so (media_kit's NativeLibrary), pure
+  // first-frame latency, and nothing on the first frame needs it: the
+  // warm-start player is created on a post-first-frame microtask, and
+  // motion art only after a track plays. The call now lives at the top of
+  // PlaybackService.ensurePlayer (and defensively in the motion-art
+  // session), so the dlopen happens after the shell has painted. It is
+  // idempotent, so ordering is preserved for both Player() call sites.
 
   // Image-cache database (cached_network_image → sqflite) needs the
   // desktop FFI backend, otherwise every thumbnail silently fails.
