@@ -6,6 +6,7 @@ import '../../core/network/network_monitor.dart';
 import '../../core/storage/prefs.dart';
 import '../../features/downloads/download_manager.dart';
 import '../../features/lastfm/auth_repository.dart';
+import '../components/buttons.dart';
 import '../theme/tokens.dart';
 
 /// Global Fluent InfoBar host — non-blocking feedback docked above content.
@@ -72,7 +73,7 @@ class _WaveInfoBarHostState extends ConsumerState<WaveInfoBarHost> {
         content: const Text('Connect to scrobble your local playback.'),
         severity: InfoBarSeverity.warning,
         isLong: false,
-        action: HyperlinkButton(
+        action: WaveLink(
           onPressed: () => context.go('/settings?section=lastfm'),
           child: const Text('Connect'),
         ),
@@ -102,7 +103,7 @@ class _WaveInfoBarHostState extends ConsumerState<WaveInfoBarHost> {
             ? InfoBarSeverity.success
             : InfoBarSeverity.error,
         isLong: false,
-        action: HyperlinkButton(
+        action: WaveLink(
           onPressed: () => context.go('/downloads'),
           child: const Text('Open'),
         ),
