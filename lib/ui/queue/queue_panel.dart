@@ -234,8 +234,14 @@ class _Shell extends StatelessWidget {
       ],
     );
     if (embedded) return body;
+    // Level 2 tonality WITHOUT the live backdrop readback. The panel is a
+    // full-height overlay: a live BackdropFilter on it re-samples the whole
+    // 360px x window-height region every time the page beneath repaints
+    // (scroll, entrance motion, artwork fades). Static tonal acrylic keeps
+    // the same look with no per-frame GPU readback.
     return WaveHaze(
       level: LwHazeLevel.l2,
+      enableBlur: false,
       base: waveBackground(context),
       border: Border(left: BorderSide(color: waveDivider(context))),
       shadow: const [

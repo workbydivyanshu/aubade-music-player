@@ -41,9 +41,24 @@ class WaveHazeScope extends InheritedWidget {
   static bool blurEnabled(BuildContext context) =>
       of(context).material != WaveMaterialMode.solid;
 
+  /// Whether [level] may filter on this device/settings combination.
+  ///
+  /// A caller's `enableBlur` is a request, never an override: Solid keeps
+  /// every surface static whatever the surface asks for, and L1 (the
+  /// thinnest material) stays tonal at low intensity instead of paying for
+  /// a faint blur nobody can see.
+  static bool allowsBlur(BuildContext context, LwHazeLevel level) {
+    final scope = of(context);
+    if (scope.material == WaveMaterialMode.solid) return false;
+    if (level == LwHazeLevel.l1 && scope.intensity == WaveHazeIntensity.low) {
+      return false;
+    }
+    return true;
+  }
+
   /// Intensity scales the L1–L3 sigma: low 0.6× · medium 1.0× · high 1.25×.
-  /// Implemented by choosing whether to blur at all for L1 on low, and
-  /// by wrapping sigma in callers that need fine control.
+  /// L1 skips the filter entirely on low (see [allowsBlur]); the remaining
+  /// levels get the multiplier, which is all `LwHaze` needs.
   static double blurScale(BuildContext context) =>
       switch (of(context).intensity) {
         WaveHazeIntensity.low => 0.6,
@@ -69,6 +84,11 @@ class WaveHaze extends StatelessWidget {
   final BoxBorder? border;
   final List<BoxShadow>? shadow;
 
+  /// Request a backdrop filter on this surface. A request, not an
+  /// override: the effective value is this AND [WaveHazeScope.allowsBlur],
+  /// so Solid mode and L1-at-low always win. Defaults to true (null).
+  final bool? enableBlur;
+
   const WaveHaze({
     super.key,
     required this.level,
@@ -78,6 +98,7 @@ class WaveHaze extends StatelessWidget {
     this.borderRadius = BorderRadius.zero,
     this.border,
     this.shadow,
+    this.enableBlur,
   });
 
   const WaveHaze.chrome({
@@ -88,6 +109,7 @@ class WaveHaze extends StatelessWidget {
     this.border,
     this.shadow,
   })  : level = LwHazeLevel.l1,
+        enableBlur = null,
         borderRadius = BorderRadius.zero;
 
   const WaveHaze.panel({
@@ -98,6 +120,7 @@ class WaveHaze extends StatelessWidget {
     this.border,
     this.shadow,
   })  : level = LwHazeLevel.l2,
+        enableBlur = null,
         borderRadius = BorderRadius.zero;
 
   const WaveHaze.flyout({
@@ -108,6 +131,7 @@ class WaveHaze extends StatelessWidget {
     this.border,
     this.shadow,
   })  : level = LwHazeLevel.l3,
+        enableBlur = null,
         borderRadius = const BorderRadius.all(Radius.circular(7));
 
   @override
@@ -133,7 +157,11 @@ class WaveHaze extends StatelessWidget {
       borderRadius: borderRadius,
       border: border,
       shadow: shadow,
-      enableBlur: WaveHazeScope.blurEnabled(context),
+      // The flag says "this surface wants a filter"; the scope says whether
+      // it may have one. Passing an explicit `true` straight through would
+      // blur even in Solid mode.
+      enableBlur: (enableBlur ?? true) &&
+          WaveHazeScope.allowsBlur(context, level),
       child: child,
     );
   }
