@@ -110,8 +110,8 @@ Root: HKCU; Subkey: "Software\Classes\Applications\aubade.exe\SupportedTypes"; V
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
-; Ask Explorer to re-read file associations once the registry entries are
-; in place, so "Open with Aubade" shows up without a reboot or logout.
+{ Ask Explorer to re-read file associations once the registry entries are }
+{ in place, so "Open with Aubade" shows up without a reboot or logout. }
 procedure SHChangeNotify(wEventId, uFlags: DWORD; dwItem1, dwItem2: DWORD); external 'SHChangeNotify@shell32.dll stdcall';
 
 procedure CurStepChanged(CurStep: TSetupStep);
