@@ -17,13 +17,20 @@ import 'features/settings/app.dart';
 import 'features/search/shared_providers.dart';
 
 Future<void> main(List<String> args) async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // macOS launch services deliver Finder opens on this channel. Register
+  // before prefs, database or window work so the native flush at launch
+  // end is never dropped; early paths wait in the pending-intent hook.
+  registerOpenWithChannel();
+
   // "Open with Aubade": decide before prefs, database or window work.
   // A second launch forwards its files to the owner and exits silently.
   final runMode = await decideRunMode(args);
   if (runMode is Handoff) exit(0);
-  setPendingOpenPaths(runMode.paths);
+  // Append, not replace: channel paths may already be waiting.
+  addPendingOpenPaths(runMode.paths);
 
-  WidgetsFlutterBinding.ensureInitialized();
   // Fatal breadcrumbs: log-and-continue-handling (return false) so the
   // next fail-fast names its line in mpv-ops.log. Sync writes only.
   FlutterError.onError = (details) {

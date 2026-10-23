@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dbus/dbus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:window_manager/window_manager.dart';
@@ -21,6 +22,17 @@ const String openWithInterface = 'org.freedesktop.Application';
 
 /// Queue label shown for files opened from the OS.
 const String openWithSourceLabel = 'Local files';
+
+/// Fixed launch-services contract shared with the macOS native side:
+/// one method, `files`, whose arguments are raw absolute paths (no
+/// `file://` scheme, already URL-decoded).
+const String openWithChannelName = 'aubade/open_with';
+const String openWithChannelMethod = 'files';
+
+/// The macOS launch-services channel. Registration happens in `main`
+/// before any prefs or database work so the native flush at launch end
+/// is never missed.
+const MethodChannel openWithChannel = MethodChannel(openWithChannelName);
 
 /// What a cold start should do with the paths it was launched with.
 sealed class RunModeDecision {
@@ -70,6 +82,9 @@ Future<RunModeDecision> decideRunMode(
   OpenWithPlatform? platform,
 }) async {
   final paths = parseOpenPaths(args, cwd: cwd);
+  // macOS has no bus or pipe: argv is the shell-launch path only, and
+  // Finder opens arrive on [openWithChannel]. Keep this a plain boot
+  // with the parsed argv files.
   if (Platform.isLinux || Platform.isWindows) {
     final target = platform ?? defaultOpenWithPlatform();
     try {
@@ -150,6 +165,30 @@ List<String> decodeOpenUris(Iterable<String> uris) {
   return paths;
 }
 
+/// Registers the macOS launch-services receiver. Called once from
+/// `main`, immediately after the binding exists and before prefs or the
+/// database are opened.
+void registerOpenWithChannel() {
+  openWithChannel.setMethodCallHandler(handleOpenWithChannelCall);
+}
+
+/// Decodes one `aubade/open_with` call. Contract: method `files` with a
+/// `List<String>` of raw absolute paths. Paths are whitelisted by
+/// [enqueueOpenPaths]; anything that arrives before the player is warm
+/// waits in the same pending hook as argv files.
+@visibleForTesting
+Future<void> handleOpenWithChannelCall(MethodCall call) async {
+  if (call.method != openWithChannelMethod) return;
+  final arguments = call.arguments;
+  if (arguments is! List) return;
+  final paths = <String>[
+    for (final value in arguments)
+      if (value is String && value.isNotEmpty) value,
+  ];
+  if (paths.isEmpty) return;
+  await enqueueOpenPaths(paths);
+}
+
 // ---------------------------------------------------------------------------
 // Process-wide intent hook
 // ---------------------------------------------------------------------------
@@ -167,11 +206,20 @@ typedef OpenWithQueueSink = Future<void> Function(
 @visibleForTesting
 OpenWithQueueSink? debugOpenWithQueueSink;
 
-/// Replaces pending paths (used once at boot, from `main`).
+/// Appends paths (used at boot, after the channel is live, so paths
+/// that arrived during startup are never clobbered).
+void addPendingOpenPaths(Iterable<String> paths) {
+  for (final path in paths) {
+    if (!isSupportedAudioPath(path)) continue;
+    if (_pendingPaths.contains(path)) continue;
+    _pendingPaths.add(path);
+  }
+}
+
+/// Replaces pending paths (tests and explicit reset).
 void setPendingOpenPaths(Iterable<String> paths) {
-  _pendingPaths
-    ..clear()
-    ..addAll(paths.where(isSupportedAudioPath));
+  _pendingPaths.clear();
+  addPendingOpenPaths(paths);
 }
 
 /// Read-only view for tests and diagnostics.
@@ -210,13 +258,12 @@ Future<void> flushOpenWithIntent(WidgetRef? ref) async {
 Future<void> enqueueOpenPaths(List<String> paths) async {
   final accepted = paths.where(isSupportedAudioPath).toList();
   if (accepted.isEmpty) return;
-  final tracks = tracksFromOpenPaths(accepted);
   final ref = _activeRef;
   if (ref == null && debugOpenWithQueueSink == null) {
-    _pendingPaths.addAll(accepted);
-  } else {
-    await _deliverTracks(tracks, ref);
+    addPendingOpenPaths(accepted);
+    return;
   }
+  await _deliverTracks(tracksFromOpenPaths(accepted), ref);
   await raiseAubadeWindow();
 }
 

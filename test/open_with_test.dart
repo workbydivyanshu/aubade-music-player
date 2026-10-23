@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dbus/dbus.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:aubade/app/open_with.dart';
@@ -57,6 +58,7 @@ void main() {
   });
 
   tearDown(() {
+    openWithChannel.setMethodCallHandler(null);
     resetOpenWithState();
     try {
       dir.deleteSync(recursive: true);
@@ -321,6 +323,71 @@ void main() {
       expect(windowsMutexName, 'aubade.handoff.mutex');
       expect(windowsPipeName, r'\\.\pipe\aubade.handoff');
       expect(windowsFocusMarker, '.');
+    });
+  });
+
+  group('launch services channel', () {
+    test('files method queues raw paths', () async {
+      final song = makeFile('Channel Song.mp3');
+
+      await handleOpenWithChannelCall(
+          MethodCall(openWithChannelMethod, <String>[song.path]));
+
+      expect(calls, hasLength(1));
+      expect(calls.single.tracks.single.playbackUrl, song.path);
+      expect(calls.single.tracks.single.title, 'Channel Song');
+      expect(calls.single.label, 'Local files');
+    });
+
+    test('paths wait for the boot flush before playback is warm', () async {
+      final sink = debugOpenWithQueueSink;
+      debugOpenWithQueueSink = null;
+      final song = makeFile('Boot Channel.flac');
+
+      await handleOpenWithChannelCall(
+          MethodCall(openWithChannelMethod, <String>[song.path]));
+
+      expect(calls, isEmpty);
+      expect(pendingOpenPaths, <String>[song.path]);
+
+      debugOpenWithQueueSink = sink;
+      await flushOpenWithIntent(null);
+
+      expect(calls, hasLength(1));
+      expect(calls.single.tracks.single.playbackUrl, song.path);
+      expect(pendingOpenPaths, isEmpty);
+    });
+
+    test('ignores unknown methods and malformed arguments', () async {
+      final song = makeFile('Ignored.mp3');
+
+      await handleOpenWithChannelCall(
+          MethodCall('activate', <String>[song.path]));
+      await handleOpenWithChannelCall(MethodCall('files', 'not a list'));
+      await handleOpenWithChannelCall(
+          MethodCall('files', <Object>[1, true, '']));
+
+      expect(calls, isEmpty);
+      expect(pendingOpenPaths, isEmpty);
+    });
+
+    test('registered channel decodes a native files call', () async {
+      final song = makeFile('Native Flush.mp3');
+      registerOpenWithChannel();
+      const codec = StandardMethodCodec();
+
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .handlePlatformMessage(
+        openWithChannelName,
+        codec.encodeMethodCall(
+            MethodCall(openWithChannelMethod, <String>[song.path])),
+        null,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(calls, hasLength(1));
+      expect(calls.single.tracks.single.playbackUrl, song.path);
+      expect(calls.single.label, 'Local files');
     });
   });
 
