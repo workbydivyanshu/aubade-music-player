@@ -780,10 +780,10 @@ class _WaveFlyoutPanelState extends State<WaveFlyoutPanel> {
       for (var i = 0; i < widget.entries!.length; i++) {
         final entry = widget.entries![i];
         if (entry is WaveMenuSeparator) {
-          // Same spec as the plugin separator: 5px bottom pad, zero-margin
+          // Same spec as the plugin separator: 5px pads, zero-margin
           // divider. Built inline — the plugin's is not a Widget.
           rows.add(const Padding(
-            padding: EdgeInsetsDirectional.only(bottom: 5),
+            padding: EdgeInsetsDirectional.only(bottom: 5, top: 5),
             child: Divider(
               style: DividerThemeData(
                   horizontalMargin: EdgeInsetsDirectional.zero),
