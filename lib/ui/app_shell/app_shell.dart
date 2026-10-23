@@ -13,6 +13,7 @@ import 'package:window_manager/window_manager.dart';
 import '../../app/window.dart';
 import '../../app/window_lifecycle.dart';
 import '../../core/audio/stream_models.dart';
+import '../../features/library/supported_audio.dart';
 import '../../features/player/playback_service.dart';
 import '../../features/search/search_repository.dart';
 import '../mini_player/mini_player.dart';
@@ -484,19 +485,7 @@ class _WaveShellState extends ConsumerState<WaveShell> {
     for (final path in paths) {
       final file = File(path);
       if (!await file.exists()) continue;
-      final ext = path.split('.').last.toLowerCase();
-      if (![
-        'mp3',
-        'flac',
-        'm4a',
-        'mp4',
-        'ogg',
-        'opus',
-        'wav',
-        'webm'
-      ].contains(ext)) {
-        continue;
-      }
+      if (!isSupportedDropPath(path)) continue;
       final base = path
           .split(Platform.pathSeparator)
           .last
