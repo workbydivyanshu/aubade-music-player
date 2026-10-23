@@ -9,7 +9,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../core/artwork/animated_artwork_service.dart';
 import '../../core/audio/stream_models.dart';
 import '../../features/lastfm/auth_repository.dart';
 import '../../features/lastfm/scrobble_repository.dart';
@@ -148,7 +147,6 @@ class WavePlayerDock extends ConsumerWidget {
     final notifier = ref.read(playbackServiceProvider.notifier);
     final current = player.current;
     final artworkUrl = player.current?.artworkUrl ?? '';
-    ref.watch(animatedArtworkWarmupProvider);
     final dockTint = ref.watch(artworkSeedProvider(artworkUrl)).valueOrNull;
     // Local stream properties for the current item. Streaming ids never
     // match a local_tracks row, so the capsule data degrades to null and
