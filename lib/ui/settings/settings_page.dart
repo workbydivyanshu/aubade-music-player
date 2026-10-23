@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/window.dart';
 import '../../app/auth_gate.dart';
+import '../../app/open_with_claims.dart';
 import '../../core/constants/app_links.dart';
 import '../../core/env/app_env.dart';
 import '../../core/storage/prefs.dart';
@@ -1508,7 +1509,70 @@ class _General extends ConsumerWidget {
             ],
           ),
         ),
+        const SizedBox(height: 8),
+        _OpenWith(onUpdate: onUpdate),
       ],
+    );
+  }
+}
+
+/// Reversible "Open with" claims. Hidden on macOS, where the bundle
+/// owns the association and there is nothing to toggle.
+class _OpenWith extends ConsumerStatefulWidget {
+  final Future<void> Function(Future<void> Function(Prefs)) onUpdate;
+  const _OpenWith({required this.onUpdate});
+
+  @override
+  ConsumerState<_OpenWith> createState() => _OpenWithState();
+}
+
+class _OpenWithState extends ConsumerState<_OpenWith> {
+  bool? _claimed;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final claimed = await appOpenWithClaims().probeClaimed();
+    if (!mounted) return;
+    setState(() => _claimed = claimed);
+  }
+
+  Future<void> _toggle(bool value) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final claims = appOpenWithClaims();
+      if (value) {
+        await claims.claimAll();
+      } else {
+        await claims.unclaimAll();
+      }
+      await widget.onUpdate((p) => p.setOpenWithAudioFilesClaimed(value));
+    } catch (_) {
+      // Silent: re-probe below and show what actually changed.
+    }
+    await _refresh();
+    if (mounted) setState(() => _busy = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final claims = appOpenWithClaims();
+    if (!claims.isSupported) return const SizedBox.shrink();
+    return _Group(
+      title: 'Open with',
+      subtitle: 'Audio files in the system player menu',
+      child: _SwitchRow(
+        value: _claimed ?? false,
+        onChanged: _toggle,
+        title: 'Audio files in the Open with menu',
+        subtitle: 'Reversible. Never changes your default player.',
+      ),
     );
   }
 }

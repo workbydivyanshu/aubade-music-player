@@ -48,6 +48,33 @@ const List<String> registerableAudioExtensions = <String>[
   'mka',
 ];
 
+/// MIME types the desktop packaging registers for "Open with Aubade".
+///
+/// Kept in the same order as the Linux desktop entry so the runtime
+/// claim written from Settings offers exactly what a package install
+/// offers. Shared by the Linux claim writer and the make-default action.
+const List<String> registerableAudioMimeTypes = <String>[
+  'audio/mpeg',
+  'audio/flac',
+  'audio/ogg',
+  'audio/opus',
+  'audio/x-opus+ogg',
+  'audio/mp4',
+  'audio/x-m4a',
+  'audio/wav',
+  'audio/x-wav',
+  'audio/vnd.wave',
+  'audio/aiff',
+  'audio/x-aiff',
+  'audio/x-ape',
+  'audio/x-wavpack',
+  'audio/x-ms-wma',
+  'audio/x-musepack',
+  'audio/x-matroska',
+  'audio/aac',
+  'audio/x-flac',
+];
+
 /// True when [path] names a file the player is willing to open.
 ///
 /// Only the extension is inspected; callers that care about existence

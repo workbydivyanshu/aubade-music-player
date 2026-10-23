@@ -231,6 +231,16 @@ class Prefs {
       _sp.setInt('aubade_lossless_quality', _clampQuality(q));
   Future<void> setDownloadQuality(int q) =>
       _sp.setInt('aubade_download_quality', _clampQuality(q));
+  // -- Open with ----------------------------------------------------------
+  /// Whether this user opted into the per-user "Open with" claims
+  /// (Windows registry entries or a user-level desktop entry on Linux).
+  /// Only written by the Settings toggle; boot never claims silently.
+  bool get openWithAudioFilesClaimed =>
+      _sp.getBool('aubade_open_with_audio_files_claimed') ?? false;
+
+  Future<void> setOpenWithAudioFilesClaimed(bool v) =>
+      _sp.setBool('aubade_open_with_audio_files_claimed', v);
+
   // -- Window behaviour ---------------------------------------------------
   /// Close button / Alt+F4 hides to the tray instead of quitting.
   /// Real quit stays in tray → Quit (ordered player teardown first).
