@@ -26,6 +26,7 @@ import '../theme/tokens.dart';
 import '../components/ambient.dart' show ambientGlowEnabledProvider;
 import '../components/glass_panel.dart';
 import '../components/buttons.dart';
+import '../components/inputs.dart';
 import '../../features/presence/discord_presence_service.dart';
 import '../../features/updater/update_models.dart';
 import '../../features/updater/update_service.dart';
@@ -1052,6 +1053,7 @@ class _Sources extends ConsumerWidget {
       builder: (context) => ContentDialog(
         title: const Text('Add addon'),
         content: TextBox(
+          decoration: waveInputDecoration(),
           controller: controller,
           placeholder: 'https://…/a/<token>/',
           maxLines: 2,
@@ -1946,6 +1948,7 @@ class _ApiKeysState extends ConsumerState<_ApiKeys> {
           const Text('API key', style: WaveType.label),
           const SizedBox(height: 4),
           TextBox(
+            decoration: waveInputDecoration(),
             controller: _key,
             placeholder: '32-character hex key',
           ),
@@ -1953,6 +1956,7 @@ class _ApiKeysState extends ConsumerState<_ApiKeys> {
           const Text('Shared secret', style: WaveType.label),
           const SizedBox(height: 4),
           TextBox(
+            decoration: waveInputDecoration(),
             controller: _secret,
             placeholder: 'Shared secret',
             obscureText: true,
