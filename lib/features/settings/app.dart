@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/router.dart';
+import '../../app/open_with.dart';
 import '../../app/window.dart';
 import '../../app/window_lifecycle.dart';
 import '../../app/auth_gate.dart';
@@ -59,6 +60,11 @@ class _AubadeAppState extends ConsumerState<AubadeApp> {
     Future.microtask(() {
       try {
         ref.read(playbackServiceProvider.notifier).ensurePlayer();
+      } catch (_) {}
+      // Files launched from the OS ("Open with Aubade") wait for the
+      // player above, then join the queue as local files.
+      try {
+        unawaited(flushOpenWithIntent(ref));
       } catch (_) {}
       try {
         ref.read(audioOutputProvider.notifier).attach();

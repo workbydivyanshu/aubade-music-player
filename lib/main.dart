@@ -1,9 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'app/open_with.dart';
 import 'app/window.dart';
 import 'core/artwork/artwork_resolver.dart';
 import 'core/artwork/official_artwork_service.dart';
@@ -14,6 +17,12 @@ import 'features/settings/app.dart';
 import 'features/search/shared_providers.dart';
 
 Future<void> main(List<String> args) async {
+  // "Open with Aubade": decide before prefs, database or window work.
+  // A second launch forwards its files to the owner and exits silently.
+  final runMode = await decideRunMode(args);
+  if (runMode is Handoff) exit(0);
+  setPendingOpenPaths(runMode.paths);
+
   WidgetsFlutterBinding.ensureInitialized();
   // Fatal breadcrumbs: log-and-continue-handling (return false) so the
   // next fail-fast names its line in mpv-ops.log. Sync writes only.
