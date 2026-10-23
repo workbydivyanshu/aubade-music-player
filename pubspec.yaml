@@ -82,7 +82,7 @@ dependencies:
   # Discord Rich Presence transport (hand-rolled named-pipe IPC in
   # lib/features/presence/discord_ipc.dart). win32/ffi are direct deps
   # because the transport imports them; versions match the resolved tree.
-  win32: ^6.3.0
+  win32: ^6.4.0
   # MPRIS (org.mpris.MediaPlayer2) over the session bus on Linux.
   dbus: ^0.7.11
   ffi: ^2.1.0

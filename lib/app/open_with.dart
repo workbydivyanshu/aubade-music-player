@@ -10,6 +10,8 @@ import 'package:window_manager/window_manager.dart';
 import '../core/audio/stream_models.dart';
 import '../features/library/supported_audio.dart';
 import '../features/player/playback_service.dart';
+import 'open_with_windows_stub.dart'
+    if (dart.library.io) 'open_with_windows_io.dart' as windows;
 
 /// Desktop identity used for both the D-Bus name and the object path
 /// (`/com/aubade/desktop`). Matches the app id in linux/CMakeLists.txt.
@@ -53,9 +55,11 @@ abstract interface class OpenWithPlatform {
 }
 
 /// Picks the real platform implementation. Everything is lazy: no D-Bus
-/// connection happens until an entry point runs. Windows handoff lands
-/// in a follow-up change; there the app boots normally for now.
-OpenWithPlatform defaultOpenWithPlatform() => const _LinuxOpenWithPlatform();
+/// connection and no kernel32 lookup happens until an entry point runs.
+OpenWithPlatform defaultOpenWithPlatform() {
+  if (Platform.isWindows) return const _WindowsOpenWithPlatform();
+  return const _LinuxOpenWithPlatform();
+}
 
 /// Early launcher decision, called from main before any prefs or window
 /// work. Parses [args], hands them to an existing instance when one owns
@@ -66,7 +70,7 @@ Future<RunModeDecision> decideRunMode(
   OpenWithPlatform? platform,
 }) async {
   final paths = parseOpenPaths(args, cwd: cwd);
-  if (Platform.isLinux) {
+  if (Platform.isLinux || Platform.isWindows) {
     final target = platform ?? defaultOpenWithPlatform();
     try {
       if (await target.tryHandOff(paths)) return Handoff(paths);
@@ -416,4 +420,19 @@ class _ApplicationObject extends DBusObject {
         if (child is DBusString) child.value,
     ];
   }
+}
+
+class _WindowsOpenWithPlatform implements OpenWithPlatform {
+  const _WindowsOpenWithPlatform();
+
+  @override
+  Future<bool> tryHandOff(List<String> paths) =>
+      windows.windowsOpenHandoff(paths);
+
+  @override
+  Future<void> startOwner({
+    required void Function(List<String> paths) onOpen,
+    required void Function() onFocus,
+  }) =>
+      windows.windowsOpenServe(onOpen: onOpen, onFocus: onFocus);
 }

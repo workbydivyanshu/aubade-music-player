@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dbus/dbus.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:aubade/app/open_with.dart';
+import 'package:aubade/app/open_with_wire.dart';
 import 'package:aubade/core/audio/stream_models.dart';
 import 'package:aubade/features/library/supported_audio.dart';
 
@@ -269,6 +271,56 @@ void main() {
       expect(platform.ownerStarted, isTrue);
       expect(platform.onOpen, isNotNull);
       expect(platform.onFocus, isNotNull);
+    });
+  });
+
+  group('windows pipe payload', () {
+    test('round trips absolute paths as CRLF lines', () {
+      final paths = <String>[
+        r'C:\Music\Artist\One.mp3',
+        r'C:\Music\Other\Two.flac',
+      ];
+      final text = encodeWindowsOpenPipePayload(paths);
+      expect(text, '${paths[0]}\r\n${paths[1]}\r\n');
+      final decoded = decodeWindowsOpenPipePayload(text);
+      expect(decoded.paths, paths);
+      expect(decoded.focusRequested, isFalse);
+    });
+
+    test('focus request is a lone dot line', () {
+      final text = encodeWindowsOpenPipePayload(const <String>[], focus: true);
+      expect(text, '.\r\n');
+      final decoded = decodeWindowsOpenPipePayload(text);
+      expect(decoded.paths, isEmpty);
+      expect(decoded.focusRequested, isTrue);
+      expect(decoded.isEmpty, isFalse);
+    });
+
+    test('paths and focus marker coexist', () {
+      final decoded = decodeWindowsOpenPipePayload(
+          'C:\\Music\\One.mp3\r\n.\r\n');
+      expect(decoded.paths, <String>[r'C:\Music\One.mp3']);
+      expect(decoded.focusRequested, isTrue);
+    });
+
+    test('wire bytes are UTF-8', () {
+      final bytes = encodeWindowsOpenPipeBytes(const <String>[
+        r'C:\Música\夜.mp3',
+      ]);
+      expect(utf8.decode(bytes), r'C:\Música\夜.mp3' '\r\n');
+    });
+
+    test('blank and CR-less lines decode the same', () {
+      final decoded =
+          decodeWindowsOpenPipePayload('\r\nA.mp3\r\n\r\nB.flac\r\n');
+      expect(decoded.paths, <String>['A.mp3', 'B.flac']);
+      expect(decoded.focusRequested, isFalse);
+    });
+
+    test('identifiers match the packaging contract', () {
+      expect(windowsMutexName, 'aubade.handoff.mutex');
+      expect(windowsPipeName, r'\\.\pipe\aubade.handoff');
+      expect(windowsFocusMarker, '.');
     });
   });
 
