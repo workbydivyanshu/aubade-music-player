@@ -14,14 +14,17 @@ import 'dash_assembler.dart';
 /// (2) Assembling a full ~50MB track before first audio stalls the
 /// first play for 10–30s.
 ///
-/// So mpv opens `http://127.0.0.1:<port>/a/<name>.m4a` and this server
-/// streams init + segments in arrival order (chunked) while teeing the
-/// same bytes to the on-disk assembled file. First audio lands after
+/// So mpv opens `http://127.0.0.1:<port>/a/<name>.m4a?token=<token>`
+/// and this server streams init + segments in arrival order (chunked)
+/// while teeing the same bytes to the on-disk assembled file. First
+/// audio lands after
 /// init + segment 1 (~2 RTTs); replays serve the finished file with
 /// full Range support. The init segment carries `mehd`, so mpv still
 /// learns the real duration immediately.
 ///
 /// Loopback only — nothing leaves the machine, no firewall prompt.
+/// Requests must carry the per-process token minted at startup; any
+/// other local process guessing the path still gets 403.
 /// Process singleton: sessions outlive any one AddonApi generation.
 class LocalMediaServer {
   LocalMediaServer({Dio? dio}) : _dio = dio ?? DioFactory.create();
@@ -32,13 +35,21 @@ class LocalMediaServer {
 
   final Dio _dio;
   HttpServer? _server;
+  String? _authToken;
   final Map<String, _Session> _sessions = {};
+
+  static String _generateAuthToken() {
+    final rand = Random.secure();
+    final bytes = List<int>.generate(16, (_) => rand.nextInt(256));
+    return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  }
 
   Future<int> ensureStarted() async {
     final running = _server;
     if (running != null) return running.port;
     final bound =
         await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    _authToken ??= _generateAuthToken();
     bound.listen(_route, onError: (_) {});
     _server = bound;
     return bound.port;
@@ -75,7 +86,8 @@ class LocalMediaServer {
         () => _Session(_dio, safe, manifestXml),
       );
       session.kickoff();
-      return Uri.parse('http://127.0.0.1:$port/a/$safe.m4a');
+      final token = _authToken;
+      return Uri.parse('http://127.0.0.1:$port/a/$safe.m4a?token=$token');
     } catch (_) {
       return null;
     }
@@ -98,6 +110,14 @@ class LocalMediaServer {
     try {
       if (req.method != 'GET') {
         req.response.statusCode = HttpStatus.methodNotAllowed;
+        await req.response.close();
+        return;
+      }
+      // Ephemeral per-process token: without it the loopback port is
+      // closed to every other local process (403 before path handling).
+      final token = req.uri.queryParameters['token'];
+      if (_authToken == null || token != _authToken) {
+        req.response.statusCode = HttpStatus.forbidden;
         await req.response.close();
         return;
       }

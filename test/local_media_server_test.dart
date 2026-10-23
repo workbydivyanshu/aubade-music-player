@@ -171,6 +171,37 @@ void main() {
       }
     });
 
+    test('missing or wrong token gets 403, correct token serves', () async {
+      final dio = Dio();
+      dio.httpClientAdapter = _StubAdapter(_bodies());
+      final server = LocalMediaServer(dio: dio);
+      addTearDown(server.close);
+      addTearDown(() => _scrub('srv-test-auth'));
+      final uri = await server.urlFor(
+          manifestXml: _manifest, cacheName: 'srv-test-auth');
+      expect(uri, isNotNull);
+      // The playback URL handed to the player carries the token.
+      final token = uri!.queryParameters['token'];
+      expect(token, isNotNull);
+      expect(RegExp(r'^[0-9a-f]{32}$').hasMatch(token!), isTrue);
+
+      // No token at all: rejected before path handling.
+      final bare = Uri(
+          scheme: uri.scheme, host: uri.host, port: uri.port, path: uri.path);
+      final missing = await _get(bare);
+      expect(missing.first, HttpStatus.forbidden);
+
+      // A guessed token: same 403.
+      final wrong = uri.replace(queryParameters: {'token': 'f' * 32});
+      final guessed = await _get(wrong);
+      expect(guessed.first, HttpStatus.forbidden);
+
+      // The minted token: serves exactly as before the gate.
+      final out = await _get(uri);
+      expect(out.first, HttpStatus.ok);
+      expect(out.sublist(1), _expected());
+    });
+
     test('unknown name 404s', () async {
       final dio = Dio();
       dio.httpClientAdapter = _StubAdapter(_bodies());
