@@ -18,6 +18,7 @@
 				<string>public.mp3</string>
 				<string>public.audio</string>
 				<string>org.xiph.flac</string>
+				<string>org.xiph.opus</string>
 				<string>public.mpeg-4-audio</string>
 				<string>com.microsoft.waveform-audio</string>
 				<string>public.aiff-audio</string>
