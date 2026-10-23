@@ -10,6 +10,20 @@ import '../theme/wave_icons.dart';
 
 export '../../core/artwork/artwork_resolver.dart' show ArtworkKind;
 
+/// Physical-pixel decode bucket for an artwork tile of [logicalSize] dp
+/// rendered at [devicePixelRatio].
+///
+/// Buckets snap UP to 320 / 640 / 1024 so a tier keeps one stable cache
+/// key regardless of the tile's exact size; only tiles wanting more than
+/// 1024 physical px return null, which decodes at native resolution.
+int? artworkDecodeBucket(double logicalSize, double devicePixelRatio) {
+  final int targetPhysical = (logicalSize * devicePixelRatio).ceil();
+  if (targetPhysical <= 320) return 320;
+  if (targetPhysical <= 640) return 640;
+  if (targetPhysical <= 1024) return 1024;
+  return null;
+}
+
 /// Canonical artwork primitive — pure image, no dashboard borders.
 ///
 /// All artwork flows through [ArtworkResolver]: URL normalization, per-
@@ -476,8 +490,25 @@ class _WaveArtworkState extends State<WaveArtwork> {
   @override
   Widget build(BuildContext context) {
     final dark = waveIsDark(context);
-    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0;
-    final pixels = (widget.size * dpr).clamp(64, 1024).toInt();
+    // Tiered, DPR-aware decode bucketing.
+    //
+    // Previously every tile decoded at min(size * dpr, 1024) backing px,
+    // so official covers shipping at 1400×1400 (about 7.8 MB RGBA each)
+    // pinned the old 50 MiB imageCache to a handful of entries and made
+    // scrolling re-decode constantly.
+    //
+    // Buckets snap UP to 320 / 640 / 1024 physical px so a given tier
+    // keeps one stable cache key regardless of the tile's exact size;
+    // only tiles wanting more than 1024 physical px fall through to
+    // native resolution.
+    final int? decodeBucket = artworkDecodeBucket(
+      widget.size,
+      MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0,
+    );
+    // On-disk copy must never be smaller than the decode bucket, or the
+    // 640 tier would decode by upscaling a 512px file. Keeps the original
+    // 512/1024 split for every tier.
+    final int diskCache = decodeBucket == 320 ? 512 : 1024;
     // Local artwork needs no resolver: the file is already on disk.
     // Missing/broken files degrade to the tonal initials fallback.
     if (_isLocalFile && widget.url.isNotEmpty) {
@@ -485,8 +516,8 @@ class _WaveArtworkState extends State<WaveArtwork> {
         child: Image.file(
           _localFile,
           fit: BoxFit.cover,
-          cacheWidth: pixels,
-          cacheHeight: pixels,
+          cacheWidth: decodeBucket,
+          cacheHeight: decodeBucket,
           errorBuilder: (context, error, stackTrace) =>
               _fallback(context, dark),
         ),
@@ -514,13 +545,6 @@ class _WaveArtworkState extends State<WaveArtwork> {
     final index = _chainIndex;
     final attempt = _attempt;
     final currentUrl = _chain[_chainIndex];
-    // Rows ≈96 backing px, grids ≈300–450, Now Playing ≈640–900.
-    // Disk tiers track backing pixels without 4x overfetch.
-    final diskCache = pixels <= 128
-        ? 256
-        : pixels <= 320
-            ? 512
-            : 1024;
     final isSmall = widget.size <= 56;
     final image = RepaintBoundary(
       child: CachedNetworkImage(
@@ -528,8 +552,8 @@ class _WaveArtworkState extends State<WaveArtwork> {
         imageUrl: currentUrl,
         width: widget.size,
         height: widget.size,
-        memCacheWidth: pixels,
-        memCacheHeight: pixels,
+        memCacheWidth: decodeBucket,
+        memCacheHeight: decodeBucket,
         maxWidthDiskCache: diskCache,
         maxHeightDiskCache: diskCache,
         fit: BoxFit.cover,

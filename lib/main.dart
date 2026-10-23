@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:media_kit/media_kit.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'app/open_with.dart';
@@ -11,6 +10,7 @@ import 'app/window.dart';
 import 'core/artwork/artwork_resolver.dart';
 import 'core/artwork/official_artwork_service.dart';
 import 'core/error/fatal_crumbs.dart';
+import 'core/platform/allocator_tuning.dart';
 import 'core/storage/app_database.dart';
 import 'core/storage/prefs.dart';
 import 'features/settings/app.dart';
@@ -40,19 +40,25 @@ Future<void> main(List<String> args) async {
     writeFatalCrumb(fatalCrumb(error, stack));
     return false;
   };
-  // Keep decoded-image memory bounded on long sessions: Home/Discover
-  // grids of 1400px covers fill the default 100MiB/1000-image cache
-  // and decode bursts spike RSS to 500MiB. 50MiB/200 images is plenty
-  // for visible tiles; offscreen tiles re-decode from disk cache.
-  PaintingBinding.instance.imageCache.maximumSize = 200;
+  // Freeze glibc's dynamic mmap/trim thresholds before anything large is
+  // allocated: without this, libmpv's per-track multi-MB buffers end up
+  // on a heap that never gives the pages back (+80 MB of RSS per track
+  // change, measured). Linux-only and best-effort; see
+  // core/platform/allocator_tuning.dart.
+  applyAllocatorTuning();
+  // High-performance desktop image cache budget: 384 MiB / 1,000 images
+  // prevents texture thrashing, frame drops, and repeat decoding while scrolling.
+  PaintingBinding.instance.imageCache.maximumSize = 1000;
   PaintingBinding.instance.imageCache.maximumSizeBytes =
-      50 << 20; // 50 MiB
-  // Single persistent media_kit/libmpv backend (Limusic parity is
-  // configured Dart-side in PlaybackService.ensurePlayer: audio-only
-  // vo=null, 32MiB demuxer cache, on-disk cache, gapless-audio).
-  // Windows bundles libmpv via media_kit_libs_video — no Rust, no
-  // C++ changes required (profiling shows no native bottleneck).
-  MediaKit.ensureInitialized();
+      384 << 20; // 384 MiB
+  // libmpv is deliberately NOT dlopened here. MediaKit.ensureInitialized()
+  // just dlopens a multi-MB .so (media_kit's NativeLibrary), pure
+  // first-frame latency, and nothing on the first frame needs it: the
+  // warm-start player is created on a post-first-frame microtask, and
+  // motion art only after a track plays. The call now lives at the top of
+  // PlaybackService.ensurePlayer (and defensively in the motion-art
+  // session), so the dlopen happens after the shell has painted. It is
+  // idempotent, so ordering is preserved for both Player() call sites.
 
   // Image-cache database (cached_network_image → sqflite) needs the
   // desktop FFI backend, otherwise every thumbnail silently fails.
