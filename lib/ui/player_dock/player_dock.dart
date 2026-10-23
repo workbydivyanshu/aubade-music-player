@@ -9,7 +9,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../core/artwork/animated_artwork_service.dart';
 import '../../core/audio/stream_models.dart';
 import '../../features/lastfm/auth_repository.dart';
 import '../../features/lastfm/scrobble_repository.dart';
@@ -148,7 +147,6 @@ class WavePlayerDock extends ConsumerWidget {
     final notifier = ref.read(playbackServiceProvider.notifier);
     final current = player.current;
     final artworkUrl = player.current?.artworkUrl ?? '';
-    ref.watch(animatedArtworkWarmupProvider);
     final dockTint = ref.watch(artworkSeedProvider(artworkUrl)).valueOrNull;
     // Local stream properties for the current item. Streaming ids never
     // match a local_tracks row, so the capsule data degrades to null and
@@ -1067,6 +1065,36 @@ class _PlayGlyphState extends State<_PlayGlyph> {
 /// thumb; hover enlarges the interaction region and shows a timestamp
 /// via tooltip overlay (never clipped by the dock island); drag/click seeks;
 /// ←/→ keys seek ±5s (Shift ±15s) when focused.
+
+/// mpv reports no duration until the source is open: a restored session or
+/// a freshly resolved stream sits at zero for a beat. Printing that absence
+/// as "0:00" claims a zero-length track and pins the thumb to the start, so
+/// the dock treats the timeline as unknown until a total exists.
+bool dockHasDuration(Duration total) => total > Duration.zero;
+
+/// Formats m:ss the way the dock clock has always read.
+String _fmtDockClock(Duration d) {
+  final m = d.inMinutes;
+  final s = d.inSeconds % 60;
+  return '$m:${s.toString().padLeft(2, '0')}';
+}
+
+/// Right-hand dock clock label: `--:--` while the length is unknown,
+/// formatted m:ss once the player knows a total.
+String dockClockLabel(Duration total) =>
+    dockHasDuration(total) ? _fmtDockClock(total) : '--:--';
+
+/// Arrow-key seek target: null when there is no total to seek along (a
+/// step would clamp to zero and yank a playing track back to the start),
+/// otherwise base + seconds clamped into [zero, total].
+Duration? dockSeekTarget(Duration base, Duration total, int seconds) {
+  if (!dockHasDuration(total)) return null;
+  final target = base + Duration(seconds: seconds);
+  if (target.isNegative) return Duration.zero;
+  if (target > total) return total;
+  return target;
+}
+
 class _DockProgress extends ConsumerStatefulWidget {
   final bool compact;
   const _DockProgress({this.compact = false});
@@ -1084,18 +1112,10 @@ class _DockProgressState extends ConsumerState<_DockProgress> {
     super.dispose();
   }
 
-  String _fmt(Duration d) {
-    final m = d.inMinutes;
-    final s = d.inSeconds % 60;
-    return '$m:${s.toString().padLeft(2, '0')}';
-  }
-
   void _seekBy(Duration base, Duration total, int seconds) {
-    final target = base + Duration(seconds: seconds);
-    final clamped = target.isNegative
-        ? Duration.zero
-        : (target > total ? total : target);
-    ref.read(playbackServiceProvider.notifier).seek(clamped);
+    final target = dockSeekTarget(base, total, seconds);
+    if (target == null) return;
+    ref.read(playbackServiceProvider.notifier).seek(target);
   }
 
   @override
@@ -1121,10 +1141,11 @@ class _DockProgressState extends ConsumerState<_DockProgress> {
       color: dark ? WaveColors.textTertiary : WaveColors.lightTextTertiary,
     );
     final totalMs = clock.duration.inMilliseconds;
-    final hoverLabel = _hoverRatio == null || totalMs <= 0
+    final hasDuration = dockHasDuration(clock.duration);
+    final hoverLabel = _hoverRatio == null || !hasDuration
         ? null
-        : _fmt(Duration(
-            milliseconds: (_hoverRatio! * totalMs).round()));
+        : _fmtDockClock(
+            Duration(milliseconds: (_hoverRatio! * totalMs).round()));
     // Compact windows hide timestamps so the timeline never overflows;
     // the hover tooltip still announces the seek target.
     final showTimes = !widget.compact;
@@ -1140,7 +1161,7 @@ class _DockProgressState extends ConsumerState<_DockProgress> {
         if (showTimes)
           SizedBox(
             width: 38,
-            child: Text(_fmt(clock.position),
+            child: Text(_fmtDockClock(clock.position),
                 textAlign: TextAlign.right, style: timeStyle),
           ),
         if (showTimes) const SizedBox(width: 8),
@@ -1165,9 +1186,12 @@ class _DockProgressState extends ConsumerState<_DockProgress> {
               return KeyEventResult.ignored;
             },
             child: LWTooltip(
-              message: hoverLabel ?? 'Seek (←/→ ±5s)',
+              message: hoverLabel ??
+                  (hasDuration ? 'Seek (←/→ ±5s)' : 'Waiting for the stream'),
               child: MouseRegion(
-                cursor: SystemMouseCursors.click,
+                cursor: hasDuration
+                    ? SystemMouseCursors.click
+                    : SystemMouseCursors.basic,
                 onExit: (_) =>
                     setState(() => _hoverRatio = null),
                 onHover: (e) {
@@ -1204,6 +1228,7 @@ class _DockProgressState extends ConsumerState<_DockProgress> {
                                       progress: progressFraction,
                                       buffered: bufferedFraction,
                                       playing: playing,
+                                      showThumb: hasDuration,
                                       color: barColor,
                                       accent: accent,
                                     ),
@@ -1215,7 +1240,7 @@ class _DockProgressState extends ConsumerState<_DockProgress> {
                                   total: clock.duration,
                                   onSeek: notifier.seek,
                                   barHeight: 3,
-                                  thumbRadius: 5,
+                                  thumbRadius: hasDuration ? 5 : 0,
                                   thumbColor: Colors.transparent,
                                   thumbGlowColor: Colors.transparent,
                                   progressBarColor: Colors.transparent,
@@ -1232,7 +1257,7 @@ class _DockProgressState extends ConsumerState<_DockProgress> {
                               total: clock.duration,
                               onSeek: notifier.seek,
                               barHeight: 3,
-                              thumbRadius: 5,
+                              thumbRadius: hasDuration ? 5 : 0,
                               thumbColor: barColor,
                               thumbGlowColor:
                                   accent.withValues(alpha: 0.25),
@@ -1255,7 +1280,7 @@ class _DockProgressState extends ConsumerState<_DockProgress> {
         if (showTimes)
           SizedBox(
             width: 38,
-            child: Text(_fmt(clock.duration), style: timeStyle),
+            child: Text(dockClockLabel(clock.duration), style: timeStyle),
           ),
       ],
     );
@@ -1269,6 +1294,10 @@ class _WavySeekTrack extends StatefulWidget {
   final double progress;
   final double buffered;
   final bool playing;
+
+  /// False until the player knows a length: no thumb on a bar with
+  /// nothing to scrub.
+  final bool showThumb;
   final Color color;
   final Color accent;
 
@@ -1276,6 +1305,7 @@ class _WavySeekTrack extends StatefulWidget {
     required this.progress,
     required this.buffered,
     required this.playing,
+    required this.showThumb,
     required this.color,
     required this.accent,
   });
@@ -1336,6 +1366,7 @@ class _WavySeekTrackState extends State<_WavySeekTrack>
             progress: widget.progress,
             buffered: widget.buffered,
             phase: _phase.value,
+            showThumb: widget.showThumb,
             color: widget.color,
             accent: widget.accent,
           ),
@@ -1349,6 +1380,10 @@ class _WavySeekPainter extends CustomPainter {
   final double progress;
   final double buffered;
   final double phase;
+
+  /// False until the player knows a length: no thumb on a bar with
+  /// nothing to scrub.
+  final bool showThumb;
   final Color color;
   final Color accent;
 
@@ -1356,6 +1391,7 @@ class _WavySeekPainter extends CustomPainter {
     required this.progress,
     required this.buffered,
     required this.phase,
+    required this.showThumb,
     required this.color,
     required this.accent,
   });
@@ -1417,6 +1453,8 @@ class _WavySeekPainter extends CustomPainter {
     }
 
     // Thumb follows the wave crest so the seek affordance stays visible.
+    // Suppressed while the length is unknown: nothing to scrub yet.
+    if (!showThumb) return;
     final x = size.width * progress.clamp(0.0, 1.0);
     final y = midY +
         math.sin((x / wavelength) * 2 * math.pi + phase * 2 * math.pi) *
@@ -1440,6 +1478,7 @@ class _WavySeekPainter extends CustomPainter {
       old.progress != progress ||
       old.buffered != buffered ||
       old.phase != phase ||
+      old.showThumb != showThumb ||
       old.color != color ||
       old.accent != accent;
 }
