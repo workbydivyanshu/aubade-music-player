@@ -10,6 +10,7 @@ import 'app/window.dart';
 import 'core/artwork/artwork_resolver.dart';
 import 'core/artwork/official_artwork_service.dart';
 import 'core/error/fatal_crumbs.dart';
+import 'core/platform/allocator_tuning.dart';
 import 'core/storage/app_database.dart';
 import 'core/storage/prefs.dart';
 import 'features/settings/app.dart';
@@ -39,6 +40,12 @@ Future<void> main(List<String> args) async {
     writeFatalCrumb(fatalCrumb(error, stack));
     return false;
   };
+  // Freeze glibc's dynamic mmap/trim thresholds before anything large is
+  // allocated: without this, libmpv's per-track multi-MB buffers end up
+  // on a heap that never gives the pages back (+80 MB of RSS per track
+  // change, measured). Linux-only and best-effort; see
+  // core/platform/allocator_tuning.dart.
+  applyAllocatorTuning();
   // Keep decoded-image memory bounded on long sessions: Home/Discover
   // grids of 1400px covers fill the default 100MiB/1000-image cache
   // and decode bursts spike RSS to 500MiB. 50MiB/200 images is plenty
