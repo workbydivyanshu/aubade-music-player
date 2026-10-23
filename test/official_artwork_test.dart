@@ -283,6 +283,7 @@ void main() {
 
     test(
       'live lookup: Metro Boomin and Madvillain return Deezer artist photos',
+      tags: 'live',
       () async {
         final service = OfficialArtworkService();
         final metro = await service.resolveArtistArtwork('Metro Boomin');
@@ -308,6 +309,7 @@ void main() {
 
     test(
       'live lookup: Metro Boomin - Overdue returns official album cover',
+      tags: 'live',
       () async {
         final service = OfficialArtworkService();
         final result = await service.resolveOfficialArtwork(
@@ -331,6 +333,7 @@ void main() {
 
     test(
       'live lookup: Madvillain - All Caps returns official studio album cover',
+      tags: 'live',
       () async {
         final service = OfficialArtworkService();
         final result = await service.resolveOfficialArtwork(
