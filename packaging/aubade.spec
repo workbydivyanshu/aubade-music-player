@@ -42,6 +42,12 @@ chmod +x "%{buildroot}/usr/bin/aubade"
 
 cp "%{_sourcedir}/aubade.desktop" "%{buildroot}/usr/share/applications/aubade.desktop"
 
+# Dolphin / Konqueror "Open in Aubade" service menu. KIO ignores
+# service menu files that are not executable.
+mkdir -p "%{buildroot}/usr/share/kio/servicemenus"
+cp "%{_sourcedir}/aubade-servicemenu.desktop" "%{buildroot}/usr/share/kio/servicemenus/aubade-servicemenu.desktop"
+chmod +x "%{buildroot}/usr/share/kio/servicemenus/aubade-servicemenu.desktop"
+
 # Multi-resolution hicolor icon suite (16x16 up to 512x512)
 for sz in 16 24 32 48 64 128 256 512; do
   mkdir -p "%{buildroot}/usr/share/icons/hicolor/${sz}x${sz}/apps"
@@ -57,6 +63,7 @@ cp "%{_sourcedir}/icons/512x512/com.aubade.desktop.png" "%{buildroot}/usr/share/
 /opt/aubade
 /usr/bin/aubade
 /usr/share/applications/aubade.desktop
+/usr/share/kio/servicemenus/aubade-servicemenu.desktop
 /usr/share/icons/hicolor/*/apps/aubade.png
 /usr/share/icons/hicolor/*/apps/com.aubade.desktop.png
 /usr/share/pixmaps/aubade.png
