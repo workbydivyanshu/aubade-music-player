@@ -8,7 +8,8 @@ import '../../core/constants/app_links.dart';
 import '../../core/storage/prefs.dart';
 import '../../features/home/home_providers.dart';
 import '../../features/lastfm/auth_repository.dart';
-import '../components/buttons.dart' show LWTooltip;
+import '../components/buttons.dart' show LWTooltip, WaveButton, WaveFilledButton, WaveLink;
+import '../components/inputs.dart';
 import '../theme/tokens.dart';
 import '../theme/wave_icons.dart';
 
@@ -628,7 +629,7 @@ class _AuthPanel extends ConsumerWidget {
             const _ApiKeyForm(),
             const SizedBox(height: 16),
           ],
-          FilledButton(
+          WaveFilledButton(
             onPressed: busy || !configured ? null : onConnect,
             style: ButtonStyle(
               padding: const WidgetStatePropertyAll(
@@ -670,7 +671,7 @@ class _AuthPanel extends ConsumerWidget {
           ),
           if (handshake != null) ...[
             const SizedBox(height: 10),
-            Button(
+            WaveButton(
               onPressed: busy ? null : onFinish,
               style: const ButtonStyle(
                 padding: WidgetStatePropertyAll(
@@ -730,7 +731,7 @@ class _AuthPanel extends ConsumerWidget {
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 10),
-          Button(
+          WaveButton(
             onPressed: busy ? null : onSkip,
             style: const ButtonStyle(
               padding: WidgetStatePropertyAll(
@@ -756,7 +757,7 @@ class _AuthPanel extends ConsumerWidget {
             color: waveDivider(context),
           ),
           const SizedBox(height: 14),
-          HyperlinkButton(
+          WaveLink(
             onPressed: onWebsite,
             child: const Row(
               mainAxisSize: MainAxisSize.min,
@@ -871,17 +872,19 @@ class _ApiKeyFormState extends ConsumerState<_ApiKeyForm> {
         children: [
           const Text('Last.fm API keys', style: WaveType.label),
           const SizedBox(height: 2),
-          HyperlinkButton(
+          WaveLink(
             onPressed: _openApiAccount,
             child: const Text('Get free keys at last.fm/api →'),
           ),
           const SizedBox(height: 8),
           TextBox(
+            decoration: waveInputDecoration(),
             controller: _key,
             placeholder: 'API key',
           ),
           const SizedBox(height: 8),
           TextBox(
+            decoration: waveInputDecoration(),
             controller: _secret,
             placeholder: 'Shared secret',
             obscureText: true,
@@ -894,7 +897,7 @@ class _ApiKeyFormState extends ConsumerState<_ApiKeyForm> {
             ),
           ],
           const SizedBox(height: 10),
-          Button(
+          WaveButton(
             onPressed: _busy ? null : _save,
             child: _busy
                 ? const Row(

@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -151,10 +153,13 @@ class WaveTitleBar extends ConsumerWidget {
                     ),
                   ),
                 ),
-                const SizedBox(width: 2),
+                const SizedBox(width: 6),
                 _AppMenu(),
                 const SizedBox(width: 6),
-                const _WindowButtons(),
+                // macOS draws its own traffic lights: the window is
+                // `TitleBarStyle.hidden`, which hides the bar but keeps the
+                // lights, so our trio would be a second, non-native set.
+                if (!Platform.isMacOS) const _WindowButtons(),
               ],
             );
           },

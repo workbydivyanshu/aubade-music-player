@@ -25,6 +25,8 @@ import '../../features/player/playback_service.dart';
 import '../theme/tokens.dart';
 import '../components/ambient.dart' show ambientGlowEnabledProvider;
 import '../components/glass_panel.dart';
+import '../components/buttons.dart';
+import '../components/inputs.dart';
 import '../../features/presence/discord_presence_service.dart';
 import '../../features/updater/update_models.dart';
 import '../../features/updater/update_service.dart';
@@ -364,7 +366,7 @@ class _Account extends ConsumerWidget {
                 ),
               ),
               signedIn
-                  ? Button(
+                  ? WaveButton(
                       onPressed: () => signOutEverywhere(ref),
                       child: const Text('Sign out'),
                     )
@@ -455,7 +457,7 @@ class _InShellConnectState extends ConsumerState<_InShellConnect> {
           ),
           const SizedBox(height: 8),
         ],
-        FilledButton(
+        WaveFilledButton(
           onPressed: _busy || !configured ? null : _begin,
           child: _busy && _handshake == null
               ? const Row(
@@ -486,7 +488,7 @@ class _InShellConnectState extends ConsumerState<_InShellConnect> {
         ],
         if (_handshake != null) ...[
           const SizedBox(height: 8),
-          Button(
+          WaveButton(
             onPressed: _busy ? null : _finish,
             child: _busy
                 ? const Row(
@@ -1023,7 +1025,7 @@ class _Sources extends ConsumerWidget {
           const SizedBox(height: 8),
           Align(
             alignment: Alignment.centerLeft,
-            child: FilledButton(
+            child: WaveFilledButton(
               onPressed: () => _addAddonDialog(context, ref, urls, onUpdate),
               child: const Text('Add addon'),
             ),
@@ -1051,16 +1053,17 @@ class _Sources extends ConsumerWidget {
       builder: (context) => ContentDialog(
         title: const Text('Add addon'),
         content: TextBox(
+          decoration: waveInputDecoration(),
           controller: controller,
           placeholder: 'https://…/a/<token>/',
           maxLines: 2,
         ),
         actions: [
-          Button(
+          WaveButton(
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('Cancel'),
           ),
-          FilledButton(
+          WaveFilledButton(
             onPressed: () => Navigator.of(context).pop(controller.text.trim()),
             child: const Text('Add'),
           ),
@@ -1081,7 +1084,7 @@ class _Sources extends ConsumerWidget {
               'Expected something like https://host/a/<token>/.',
             ),
             actions: [
-              FilledButton(
+              WaveFilledButton(
                 onPressed: () => Navigator.of(dialogContext).pop(),
                 child: const Text('OK'),
               ),
@@ -1108,7 +1111,7 @@ class _Sources extends ConsumerWidget {
             'or wrong URL. Nothing was saved.',
           ),
           actions: [
-            FilledButton(
+            WaveFilledButton(
               onPressed: () => Navigator.of(dialogContext).pop(),
               child: const Text('OK'),
             ),
@@ -1167,7 +1170,7 @@ class _AddonRow extends ConsumerWidget {
               ],
             ),
           ),
-          Button(onPressed: () => onRemove(), child: const Text('Remove')),
+          WaveButton(onPressed: () => onRemove(), child: const Text('Remove')),
         ],
       ),
     );
@@ -1256,7 +1259,7 @@ class _About extends ConsumerWidget {
                 spacing: WaveSpacing.x4,
                 runSpacing: WaveSpacing.x4,
                 children: [
-                  Button(
+                  WaveButton(
                     onPressed: () => _open(kLandingUrl),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
@@ -1267,7 +1270,7 @@ class _About extends ConsumerWidget {
                       ],
                     ),
                   ),
-                  Button(
+                  WaveButton(
                     onPressed: () => _open(kLandingUrl),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
@@ -1278,7 +1281,7 @@ class _About extends ConsumerWidget {
                       ],
                     ),
                   ),
-                  Button(
+                  WaveButton(
                     onPressed: () => _open(kLandingUrl),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
@@ -1360,7 +1363,7 @@ class _UpdateCheckSection extends ConsumerWidget {
     if (state.status == UpdateStatus.available ||
         state.status == UpdateStatus.downloading ||
         state.status == UpdateStatus.readyToInstall) {
-      return FilledButton(
+      return WaveFilledButton(
         onPressed: () => showUpdateDialog(context, ref),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1380,7 +1383,7 @@ class _UpdateCheckSection extends ConsumerWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Button(
+        WaveButton(
           onPressed: () => updater.checkForUpdates(force: true),
           child: const Row(
             mainAxisSize: MainAxisSize.min,
@@ -1687,7 +1690,7 @@ class _LibrarySettings extends ConsumerWidget {
                 ),
               Align(
                 alignment: Alignment.centerLeft,
-                child: Button(
+                child: WaveButton(
                   onPressed: () => _pickFolder(context, ref),
                   child: const Text('Add Folder'),
                 ),
@@ -1720,7 +1723,7 @@ class _LibrarySettings extends ConsumerWidget {
               const SizedBox(height: 10),
               Align(
                 alignment: Alignment.centerLeft,
-                child: Button(
+                child: WaveButton(
                   onPressed: scanning
                       ? null
                       : () => ref
@@ -1799,13 +1802,13 @@ class _Downloads extends ConsumerWidget {
                   ],
                 ),
               ),
-              Button(
+              WaveButton(
                 onPressed: () => _pickDir(ref),
                 child: const Text('Change'),
               ),
               if (custom.isNotEmpty) ...[
                 const SizedBox(width: 8),
-                Button(
+                WaveButton(
                   onPressed: () =>
                       onUpdate((p) => p.resetDownloadDir()),
                   child: const Text('Reset'),
@@ -1935,7 +1938,7 @@ class _ApiKeysState extends ConsumerState<_ApiKeys> {
                 ),
               ),
               if (configured)
-                Button(
+                WaveButton(
                   onPressed: _busy ? null : _clear,
                   child: const Text('Clear'),
                 ),
@@ -1945,6 +1948,7 @@ class _ApiKeysState extends ConsumerState<_ApiKeys> {
           const Text('API key', style: WaveType.label),
           const SizedBox(height: 4),
           TextBox(
+            decoration: waveInputDecoration(),
             controller: _key,
             placeholder: '32-character hex key',
           ),
@@ -1952,6 +1956,7 @@ class _ApiKeysState extends ConsumerState<_ApiKeys> {
           const Text('Shared secret', style: WaveType.label),
           const SizedBox(height: 4),
           TextBox(
+            decoration: waveInputDecoration(),
             controller: _secret,
             placeholder: 'Shared secret',
             obscureText: true,
@@ -1964,7 +1969,7 @@ class _ApiKeysState extends ConsumerState<_ApiKeys> {
             ),
           ],
           const SizedBox(height: 10),
-          FilledButton(
+          WaveFilledButton(
             onPressed: _busy ? null : _save,
             child: _busy
                 ? const Row(
@@ -2165,7 +2170,7 @@ class _ActionRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 10),
-          Button(onPressed: onPressed, child: Text(buttonLabel)),
+          WaveButton(onPressed: onPressed, child: Text(buttonLabel)),
         ],
       ),
     );

@@ -3,7 +3,8 @@ import 'package:fluent_ui/fluent_ui.dart';
 import '../theme/tokens.dart';
 import '../theme/wave_icons.dart';
 import 'artwork.dart';
-import 'buttons.dart' show LWTooltip;
+import 'buttons.dart' show LWTooltip, WaveButton;
+import 'inputs.dart';
 import 'menus.dart';
 
 /// Artwork-led collection header.
@@ -89,7 +90,7 @@ class WaveCollectionHero extends StatelessWidget {
                       child: SizedBox(
                         width: WaveDensity.hitArea,
                         height: 32,
-                        child: Button(
+                        child: WaveButton(
                           onPressed: onOpen,
                           child: const Icon(
                             FluentIcons.more,
@@ -161,6 +162,7 @@ class WaveFilterBar extends StatelessWidget {
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 300),
                 child: TextBox(
+                  decoration: waveInputDecoration(),
                   controller: controller,
                   placeholder: hint,
                   prefix: Padding(

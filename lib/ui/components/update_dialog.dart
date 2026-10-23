@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../features/updater/release_notes.dart';
 import '../../features/updater/update_models.dart';
 import '../../features/updater/update_service.dart';
+import '../components/buttons.dart';
 import '../theme/tokens.dart';
 
 /// Displays an Apple-caliber modal dialog showing update details,
@@ -29,7 +30,7 @@ class _UpdateDialog extends ConsumerWidget {
         title: const Text('Updates'),
         content: const Text('No update information available.'),
         actions: [
-          Button(
+          WaveButton(
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('Close'),
           ),
@@ -222,19 +223,19 @@ class _UpdateDialog extends ConsumerWidget {
         if (isInstalling)
           const SizedBox.shrink()
         else if (isRelaunchReady) ...[
-          Button(
+          WaveButton(
             onPressed: () {
               updater.dismiss();
               Navigator.of(context).pop();
             },
             child: const Text('Restart later'),
           ),
-          FilledButton(
+          WaveFilledButton(
             onPressed: () => updater.relaunch(),
             child: const Text('Restart now'),
           ),
         ] else if (!isDownloading) ...[
-          Button(
+          WaveButton(
             onPressed: () {
               updater.dismiss();
               Navigator.of(context).pop();
@@ -242,26 +243,26 @@ class _UpdateDialog extends ConsumerWidget {
             child: const Text('Later'),
           ),
           if (isError && state.downloadedFilePath != null)
-            Button(
+            WaveButton(
               onPressed: () => updater.openDownloadFolder(),
               child: const Text('Open folder'),
             ),
-          Button(
+          WaveButton(
             onPressed: () => updater.openReleaseInBrowser(),
             child: const Text('View release'),
           ),
           if (isReady)
-            FilledButton(
+            WaveFilledButton(
               onPressed: () => updater.applyUpdate(),
               child: const Text('Install & Relaunch'),
             )
           else if (!isError || state.downloadedFilePath == null)
-            FilledButton(
+            WaveFilledButton(
               onPressed: () => updater.downloadUpdate(),
               child: const Text('Download & Update'),
             ),
         ] else ...[
-          Button(
+          WaveButton(
             onPressed: () => updater.openReleaseInBrowser(),
             child: const Text('Download Manually'),
           ),
