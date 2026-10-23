@@ -301,6 +301,7 @@ class WavePlayerDock extends ConsumerWidget {
                                       icon: WaveIcons.more,
                                       onTap: null,
                                       menuItems: waveTrackMenuItems(
+                                        context: context,
                                         ref: ref,
                                         title: current.title,
                                         artist: current.artist,

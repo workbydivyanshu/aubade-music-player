@@ -1667,6 +1667,7 @@ class _TrackCardState extends ConsumerState<_TrackCard> {
     final chip = _qualityBadge(widget.track);
     return WaveContextMenu(
       items: () => waveTrackMenuItems(
+        context: context,
         ref: ref,
         title: widget.track.title,
         artist: widget.track.artist,

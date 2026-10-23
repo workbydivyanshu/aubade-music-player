@@ -578,6 +578,7 @@ class _WaveDesktopTableState<T extends Object>
       menuItems: () =>
           widget.menuBuilder?.call(ref, item) ??
           waveTrackMenuItems(
+            context: context,
             ref: ref,
             playable: widget.playableOf(item),
             title: widget.titleOf(item),

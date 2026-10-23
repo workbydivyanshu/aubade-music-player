@@ -7,6 +7,8 @@ import '../../features/innertube/innertube_api.dart';
 import '../../features/library/playlist_import.dart';
 import '../../features/library/playlist_link.dart';
 import '../../features/library/playlists.dart';
+import '../components/buttons.dart' show WaveButton, WaveFilledButton;
+import '../components/inputs.dart' show waveInputDecoration;
 
 /// Shared playlist dialogs (create / rename / delete), used by the
 /// playlists browser and the local playlist detail page.
@@ -20,6 +22,7 @@ Future<void> showWaveCreatePlaylist(
     builder: (context) => ContentDialog(
       title: const Text('New playlist'),
       content: TextBox(
+        decoration: waveInputDecoration(),
         controller: controller,
         placeholder: 'Playlist name',
         autofocus: true,
@@ -50,6 +53,49 @@ Future<void> showWaveCreatePlaylist(
   }
 }
 
+/// "Add to playlist → New playlist…": names a playlist, creates it and
+/// files [track] in it, without leaving the page the menu was opened on.
+///
+/// The add-to-playlist pickers assume the caller already holds a target;
+/// this is the entry point for a library whose only playlist is Liked
+/// Songs, reached from the track menu cascade and the picker's create row.
+Future<void> showWaveAddToNewPlaylist(
+  BuildContext context,
+  WidgetRef ref,
+  StoredTrack track,
+) async {
+  final controller = TextEditingController();
+  final name = await showDialog<String>(
+    context: context,
+    builder: (context) => ContentDialog(
+      title: const Text('New playlist'),
+      content: TextBox(
+        decoration: waveInputDecoration(),
+        controller: controller,
+        placeholder: 'Playlist name',
+        autofocus: true,
+        onSubmitted: (v) => Navigator.of(context).pop(v.trim()),
+      ),
+      actions: [
+        WaveButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        WaveFilledButton(
+          onPressed: () =>
+              Navigator.of(context).pop(controller.text.trim()),
+          child: const Text('Create'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  if (name == null || name.isEmpty) return;
+  final library = ref.read(playlistRepositoryProvider.notifier);
+  final created = await library.createCustom(name);
+  await library.addTrack(created.id, track);
+}
+
 Future<void> showWaveRenamePlaylist(
   BuildContext context,
   WidgetRef ref,
@@ -62,6 +108,7 @@ Future<void> showWaveRenamePlaylist(
     builder: (context) => ContentDialog(
       title: const Text('Rename playlist'),
       content: TextBox(
+        decoration: waveInputDecoration(),
         controller: controller,
         autofocus: true,
         onSubmitted: (v) =>
@@ -207,6 +254,7 @@ Future<void> showWaveImportPlaylist(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               TextBox(
+                decoration: waveInputDecoration(),
                 controller: controller,
                 autofocus: true,
                 placeholder:
