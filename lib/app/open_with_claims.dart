@@ -27,6 +27,11 @@ abstract interface class OpenWithClaims {
 
   /// Removes only the claims written by this app, never a package's.
   Future<void> unclaimAll();
+
+  /// Opt-in: asks the OS to make Aubade the default player for the
+  /// claimed types. Never writes a Windows UserChoice key; on Windows
+  /// it only opens the system page where the user decides.
+  Future<void> makeDefault();
 }
 
 /// Test seam: lets settings widget tests use a fake claim store.
@@ -61,6 +66,9 @@ class InertOpenWithClaims implements OpenWithClaims {
 
   @override
   Future<void> unclaimAll() async {}
+
+  @override
+  Future<void> makeDefault() async {}
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +215,15 @@ class LinuxOpenWithClaims implements OpenWithClaims {
       } catch (_) {}
     }
     await _run('update-desktop-database', [_applicationsDir]);
+  }
+
+  @override
+  Future<void> makeDefault() async {
+    if (!Platform.isLinux) return;
+    // The packaged and user-level entries share the same desktop id.
+    for (final mime in registerableAudioMimeTypes) {
+      await _run('xdg-mime', ['default', 'aubade.desktop', mime]);
+    }
   }
 }
 
@@ -357,10 +374,12 @@ bool _hasRegistryValue(HKEY key, String valueName) {
 }
 
 class WindowsOpenWithClaims implements OpenWithClaims {
-  WindowsOpenWithClaims({String? executable}) : _executableOverride =
-      executable;
+  WindowsOpenWithClaims({String? executable, ClaimCommandRunner? run})
+      : _executableOverride = executable,
+        _run = run ?? _runQuietly;
 
   final String? _executableOverride;
+  final ClaimCommandRunner _run;
 
   String get _executable => _executableOverride ?? Platform.resolvedExecutable;
 
@@ -455,5 +474,12 @@ class WindowsOpenWithClaims implements OpenWithClaims {
       }
     }
     _notifyShellAssociations();
+  }
+
+  @override
+  Future<void> makeDefault() async {
+    // Apps may not set defaults on Windows 10+; the system page is the
+    // sanctioned surface. No UserChoice key is ever written here.
+    await _run('explorer.exe', ['ms-settings:defaultapps']);
   }
 }

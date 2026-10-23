@@ -1564,16 +1564,41 @@ class _OpenWithState extends ConsumerState<_OpenWith> {
   Widget build(BuildContext context) {
     final claims = appOpenWithClaims();
     if (!claims.isSupported) return const SizedBox.shrink();
+    final opensSystemPage = Platform.isWindows;
     return _Group(
       title: 'Open with',
       subtitle: 'Audio files in the system player menu',
-      child: _SwitchRow(
-        value: _claimed ?? false,
-        onChanged: _toggle,
-        title: 'Audio files in the Open with menu',
-        subtitle: 'Reversible. Never changes your default player.',
+      child: Column(
+        children: [
+          _SwitchRow(
+            value: _claimed ?? false,
+            onChanged: _toggle,
+            title: 'Audio files in the Open with menu',
+            subtitle: 'Reversible. Never changes your default player.',
+          ),
+          if (_claimed == true)
+            _ActionRow(
+              title: 'Set Aubade as the default player',
+              subtitle: opensSystemPage
+                  ? 'You choose Aubade under Default apps.'
+                  : 'Applies to the audio types Aubade claims.',
+              buttonLabel: opensSystemPage ? 'Open settings' : 'Set default',
+              onPressed: _makeDefault,
+            ),
+        ],
       ),
     );
+  }
+
+  Future<void> _makeDefault() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await appOpenWithClaims().makeDefault();
+    } catch (_) {
+      // Best effort: the system settings remain the fallback.
+    }
+    if (mounted) setState(() => _busy = false);
   }
 }
 
@@ -2100,6 +2125,47 @@ class _SwitchRow extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           ToggleSwitch(checked: value, onChanged: onChanged),
+        ],
+      ),
+    );
+  }
+}
+
+/// One settings action: label on the right, behaves like a button row.
+class _ActionRow extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final String buttonLabel;
+  final Future<void> Function() onPressed;
+  const _ActionRow({
+    required this.title,
+    required this.subtitle,
+    required this.buttonLabel,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: WaveType.trackTitle),
+                Text(
+                  subtitle,
+                  style: WaveType.meta.copyWith(
+                    color: waveTextSecondary(context),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Button(onPressed: onPressed, child: Text(buttonLabel)),
         ],
       ),
     );

@@ -33,6 +33,7 @@ const List<String> dropOnlyAudioExtensions = <String>[
 const List<String> registerableAudioExtensions = <String>[
   'mp3',
   'flac',
+  'ogg',
   'opus',
   'oga',
   'm4a',

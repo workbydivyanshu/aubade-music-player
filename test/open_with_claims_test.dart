@@ -201,7 +201,7 @@ void main() {
         windowsOpenCommand(r'C:\Program Files\Aubade\aubade.exe'),
         r'"C:\Program Files\Aubade\aubade.exe" "%1"',
       );
-      expect(registerableAudioExtensions, hasLength(15));
+      expect(registerableAudioExtensions, hasLength(16));
     });
 
     test('registry calls are inert outside Windows', () async {
@@ -250,4 +250,41 @@ void main() {
       await claims.unclaimAll();
     });
   });
+
+group('make default actions', () {
+  test('linux writes one xdg-mime call per claimed mime', () async {
+    if (!Platform.isLinux) return;
+    final calls = <String>[];
+    final claims = LinuxOpenWithClaims(
+      homeDir: '/tmp/nonexistent-aubade-test',
+      run: (exe, args) async {
+        calls.add('$exe ${args.join(' ')}');
+      },
+    );
+    await claims.makeDefault();
+    expect(calls, hasLength(registerableAudioMimeTypes.length));
+    expect(
+      calls.first,
+      'xdg-mime default aubade.desktop ${registerableAudioMimeTypes.first}',
+    );
+  });
+
+  test('windows opens the system default apps page only', () async {
+    final calls = <String>[];
+    final claims = WindowsOpenWithClaims(
+      executable: r'C:\aubade.exe',
+      run: (exe, args) async {
+        calls.add('$exe ${args.join(' ')}');
+      },
+    );
+    await claims.makeDefault();
+    expect(calls, <String>['explorer.exe ms-settings:defaultapps']);
+  });
+
+  test('inert platforms never act', () async {
+    const claims = InertOpenWithClaims();
+    expect(claims.isSupported, isFalse);
+    await claims.makeDefault();
+  });
+});
 }
