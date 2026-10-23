@@ -1088,15 +1088,18 @@ class WaveOverflowButton extends StatelessWidget {
         buttonBuilder: (context, onOpen) => SizedBox(
           width: WaveDensity.hitArea,
           height: WaveDensity.hitArea,
-          child: IconButton(
-            icon: Icon(
-              icon,
-              size: 15,
-              color: dark
-                  ? WaveColors.textSecondary
-                  : WaveColors.lightTextSecondary,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: IconButton(
+              icon: Icon(
+                icon,
+                size: 15,
+                color: dark
+                    ? WaveColors.textSecondary
+                    : WaveColors.lightTextSecondary,
+              ),
+              onPressed: onOpen,
             ),
-            onPressed: onOpen,
           ),
         ),
       ),
