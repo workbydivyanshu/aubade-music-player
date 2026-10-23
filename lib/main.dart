@@ -46,13 +46,11 @@ Future<void> main(List<String> args) async {
   // change, measured). Linux-only and best-effort; see
   // core/platform/allocator_tuning.dart.
   applyAllocatorTuning();
-  // Keep decoded-image memory bounded on long sessions: Home/Discover
-  // grids of 1400px covers fill the default 100MiB/1000-image cache
-  // and decode bursts spike RSS to 500MiB. 50MiB/200 images is plenty
-  // for visible tiles; offscreen tiles re-decode from disk cache.
-  PaintingBinding.instance.imageCache.maximumSize = 200;
+  // High-performance desktop image cache budget: 384 MiB / 1,000 images
+  // prevents texture thrashing, frame drops, and repeat decoding while scrolling.
+  PaintingBinding.instance.imageCache.maximumSize = 1000;
   PaintingBinding.instance.imageCache.maximumSizeBytes =
-      50 << 20; // 50 MiB
+      384 << 20; // 384 MiB
   // libmpv is deliberately NOT dlopened here. MediaKit.ensureInitialized()
   // just dlopens a multi-MB .so (media_kit's NativeLibrary), pure
   // first-frame latency, and nothing on the first frame needs it: the
