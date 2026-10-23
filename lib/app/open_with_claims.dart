@@ -44,9 +44,19 @@ OpenWithClaims appOpenWithClaims() =>
 
 /// Picks the real platform implementation. [homeDir] is a test seam for
 /// the Linux branch; the app always passes null and uses `$HOME`.
-OpenWithClaims defaultOpenWithClaims({String? homeDir}) {
+/// [systemDesktopFile] exists for tests on machines that really have a
+/// package install; the app always passes null and uses the system path.
+OpenWithClaims defaultOpenWithClaims({
+  String? homeDir,
+  String? systemDesktopFile,
+}) {
   if (Platform.isWindows) return WindowsOpenWithClaims();
-  if (Platform.isLinux) return LinuxOpenWithClaims(homeDir: homeDir);
+  if (Platform.isLinux) {
+    return LinuxOpenWithClaims(
+      homeDir: homeDir,
+      systemDesktopFile: systemDesktopFile,
+    );
+  }
   return const InertOpenWithClaims();
 }
 

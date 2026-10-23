@@ -174,7 +174,10 @@ void main() {
     });
 
     test('the default factory uses the injected home only', () async {
-      final claims = defaultOpenWithClaims(homeDir: home.path);
+      final claims = defaultOpenWithClaims(
+        homeDir: home.path,
+        systemDesktopFile: '${home.path}/no-such-system.desktop',
+      );
       expect(claims, isA<LinuxOpenWithClaims>());
       // Probe reads the injected home only; no file is written here.
       expect(await claims.probeClaimed(), isFalse);
