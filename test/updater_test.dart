@@ -53,6 +53,27 @@ class _ReleaseAdapter implements HttpClientAdapter {
 }
 
 void main() {
+  group('automatic prompt gating', () {
+    setUp(() {
+      resetAutoPromptHistory();
+    });
+
+    test('prompts for a release never seen this session', () {
+      expect(shouldAutoPromptForRelease('1.0.6'), isTrue);
+    });
+
+    test('does not prompt twice for the same release', () {
+      markReleaseAutoPrompted('1.0.6');
+      expect(shouldAutoPromptForRelease('1.0.6'), isFalse);
+      expect(shouldAutoPromptForRelease('1.0.7'), isTrue);
+    });
+
+    test('does not prompt without a version', () {
+      expect(shouldAutoPromptForRelease(null), isFalse);
+      expect(shouldAutoPromptForRelease(''), isFalse);
+    });
+  });
+
   group('UpdateService.isNewerVersion', () {
     test('detects patch bump as newer', () {
       expect(UpdateService.isNewerVersion('1.3.1', '1.3.0'), isTrue);

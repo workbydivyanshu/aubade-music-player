@@ -16,6 +16,9 @@ import '../../core/audio/stream_models.dart';
 import '../../features/library/supported_audio.dart';
 import '../../features/player/playback_service.dart';
 import '../../features/search/search_repository.dart';
+import '../../features/updater/update_models.dart';
+import '../../features/updater/update_service.dart';
+import '../components/update_dialog.dart';
 import '../mini_player/mini_player.dart';
 import '../components/ambient.dart'
     show ambientGlowEnabledProvider, artworkWavePaletteProvider, WavePalette;
@@ -83,6 +86,7 @@ class _WaveShellState extends ConsumerState<WaveShell> {
   bool _miniOpen = false;
   bool _draggingFiles = false;
   late final TextEditingController _searchController;
+  Timer? _updateCheckTimer;
   final FocusNode _searchFocus = FocusNode();
   final List<String> _backStack = [];
   final List<String> _forwardStack = [];
@@ -208,6 +212,27 @@ class _WaveShellState extends ConsumerState<WaveShell> {
     // dispatch, so Space/arrows can't be eaten by the focused button or
     // list (see wave_hotkeys.dart).
     HardwareKeyboard.instance.addHandler(_onGlobalKey);
+    _wireUpdateChecks();
+  }
+
+  /// Automatic update checks: one shortly after boot, then on the
+  /// background interval while the app runs. When a check finds a newer
+  /// release, the prompt fires once per release per session.
+  void _wireUpdateChecks() {
+    Future<void>.delayed(const Duration(seconds: 12), () {
+      if (mounted) ref.read(updateServiceProvider.notifier).checkForUpdates();
+    });
+    _updateCheckTimer = Timer.periodic(kBackgroundCheckInterval, (_) {
+      if (mounted) ref.read(updateServiceProvider.notifier).checkForUpdates();
+    });
+    ref.listenManual<UpdateState>(updateServiceProvider, (previous, next) {
+      if (next.status != UpdateStatus.available) return;
+      final version = next.release?.version;
+      if (!shouldAutoPromptForRelease(version)) return;
+      if (version != null) markReleaseAutoPrompted(version);
+      if (!mounted) return;
+      showUpdateDialog(context, ref);
+    });
   }
 
   /// OS-level hotkeys are background-only: the in-app global handler (§
@@ -361,6 +386,7 @@ class _WaveShellState extends ConsumerState<WaveShell> {
 
   @override
   void dispose() {
+    _updateCheckTimer?.cancel();
     HardwareKeyboard.instance.removeHandler(_onGlobalKey);
     _searchController.dispose();
     _searchFocus.dispose();

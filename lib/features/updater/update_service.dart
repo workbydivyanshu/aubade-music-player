@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
@@ -22,6 +23,26 @@ const kFallbackAppVersion = '1.0.5';
 
 /// Minimum interval between automatic background update checks.
 const kBackgroundCheckInterval = Duration(hours: 12);
+
+/// Releases the automatic prompt already fired for during this session.
+/// One prompt per release per session keeps the nudge quiet, while a
+/// new release version re-arms it.
+final Set<String> _autoPromptedReleases = <String>{};
+
+/// True when the automatic prompt may fire for [releaseVersion].
+bool shouldAutoPromptForRelease(String? releaseVersion) {
+  if (releaseVersion == null || releaseVersion.isEmpty) return false;
+  return !_autoPromptedReleases.contains(releaseVersion);
+}
+
+/// Records that the automatic prompt fired for [releaseVersion].
+void markReleaseAutoPrompted(String releaseVersion) {
+  _autoPromptedReleases.add(releaseVersion);
+}
+
+/// Clears the automatic-prompt history between tests.
+@visibleForTesting
+void resetAutoPromptHistory() => _autoPromptedReleases.clear();
 
 /// A process invocation used to install a downloaded Linux package.
 class InstallCommand {
