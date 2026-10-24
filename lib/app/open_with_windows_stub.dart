@@ -5,7 +5,7 @@
 /// stub keeps the shared call sites compilable on every platform.
 Future<bool> windowsOpenHandoff(List<String> paths) async => false;
 
-Future<void> windowsOpenServe({
+Future<bool> windowsOpenServe({
   required void Function(List<String> paths) onOpen,
   required void Function() onFocus,
-}) async {}
+}) async => false;

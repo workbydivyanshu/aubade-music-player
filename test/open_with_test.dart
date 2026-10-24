@@ -11,9 +11,13 @@ import 'package:aubade/core/audio/stream_models.dart';
 import 'package:aubade/features/library/supported_audio.dart';
 
 class _FakePlatform implements OpenWithPlatform {
-  _FakePlatform({this.acceptHandoff = false});
+  _FakePlatform({this.acceptHandoff = false, this.ownerTaken = false});
 
   final bool acceptHandoff;
+
+  /// True simulates another instance already owning the identity, so
+  /// [startOwner] reports this process is not the owner.
+  final bool ownerTaken;
   final List<List<String>> handoffs = <List<String>>[];
   bool ownerStarted = false;
   void Function(List<String> paths)? onOpen;
@@ -26,13 +30,27 @@ class _FakePlatform implements OpenWithPlatform {
   }
 
   @override
-  Future<void> startOwner({
+  Future<bool> startOwner({
     required void Function(List<String> paths) onOpen,
     required void Function() onFocus,
   }) async {
     ownerStarted = true;
     this.onOpen = onOpen;
     this.onFocus = onFocus;
+    return !ownerTaken;
+  }
+}
+
+class _FailingPlatform implements OpenWithPlatform {
+  @override
+  Future<bool> tryHandOff(List<String> paths) async => false;
+
+  @override
+  Future<bool> startOwner({
+    required void Function(List<String> paths) onOpen,
+    required void Function() onFocus,
+  }) async {
+    throw const FileSystemException('no session bus');
   }
 }
 
@@ -249,7 +267,8 @@ void main() {
     test('handoff when a running instance accepts', () async {
       if (!Platform.isLinux && !Platform.isWindows) return;
       final song = makeFile('handoff.mp3');
-      final platform = _FakePlatform(acceptHandoff: true);
+      final platform =
+          _FakePlatform(acceptHandoff: true, ownerTaken: true);
 
       final decision =
           await decideRunMode(<String>[song.path], platform: platform);
@@ -257,7 +276,7 @@ void main() {
       expect(decision, isA<Handoff>());
       expect(decision.paths, <String>[song.path]);
       expect(platform.handoffs.single, <String>[song.path]);
-      expect(platform.ownerStarted, isFalse);
+      expect(platform.ownerStarted, isTrue);
     });
 
     test('proceed and serve when no instance owns the app', () async {
@@ -273,6 +292,45 @@ void main() {
       expect(platform.ownerStarted, isTrue);
       expect(platform.onOpen, isNotNull);
       expect(platform.onFocus, isNotNull);
+      expect(platform.handoffs, isEmpty);
+    });
+
+    test('a duplicate launch exits even when the handoff is refused',
+        () async {
+      if (!Platform.isLinux && !Platform.isWindows) return;
+      final song = makeFile('dupe.mp3');
+      final platform = _FakePlatform(ownerTaken: true);
+
+      final decision =
+          await decideRunMode(<String>[song.path], platform: platform);
+
+      expect(decision, isA<Handoff>());
+      expect(decision.paths, <String>[song.path]);
+      expect(platform.ownerStarted, isTrue);
+      expect(platform.handoffs.single, <String>[song.path]);
+    });
+
+    test('an empty second launch exits with a focus handoff', () async {
+      if (!Platform.isLinux && !Platform.isWindows) return;
+      final platform = _FakePlatform(ownerTaken: true);
+
+      final decision = await decideRunMode(<String>[], platform: platform);
+
+      expect(decision, isA<Handoff>());
+      expect(decision.paths, isEmpty);
+      expect(platform.handoffs.single, isEmpty);
+    });
+
+    test('a bus failure keeps the plain boot', () async {
+      if (!Platform.isLinux && !Platform.isWindows) return;
+      final song = makeFile('nobus.mp3');
+      final platform = _FailingPlatform();
+
+      final decision =
+          await decideRunMode(<String>[song.path], platform: platform);
+
+      expect(decision, isA<Proceed>());
+      expect(decision.paths, <String>[song.path]);
     });
   });
 

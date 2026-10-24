@@ -59,8 +59,11 @@ abstract interface class OpenWithPlatform {
   /// request when [paths] is empty).
   Future<bool> tryHandOff(List<String> paths);
 
-  /// Starts the listener that owns the app's single-instance identity.
-  Future<void> startOwner({
+  /// Claims the app's single-instance identity and starts serving it.
+  /// Returns true when THIS process owns the identity and is serving;
+  /// false when another instance owns it. Throwing means the state is
+  /// unknown (no bus, for example); callers boot anyway.
+  Future<bool> startOwner({
     required void Function(List<String> paths) onOpen,
     required void Function() onFocus,
   });
@@ -87,18 +90,25 @@ Future<RunModeDecision> decideRunMode(
   // with the parsed argv files.
   if (Platform.isLinux || Platform.isWindows) {
     final target = platform ?? defaultOpenWithPlatform();
+    bool owner;
     try {
-      if (await target.tryHandOff(paths)) return Handoff(paths);
-    } catch (_) {
-      // A broken bus or a half-open pipe falls through to a normal boot.
-    }
-    try {
-      await target.startOwner(
+      owner = await target.startOwner(
         onOpen: enqueueOpenPaths,
         onFocus: raiseAubadeWindow,
       );
     } catch (_) {
-      // Serving is best-effort; playback still works this session.
+      // Ownership unknown (no bus, for example): a plain boot still
+      // plays, it just cannot serve or hand off.
+      return Proceed(paths);
+    }
+    if (!owner) {
+      // Another instance owns the identity. Deliver the files (or the
+      // focus request) best-effort, then exit no matter what: a second
+      // full instance would paint a duplicate tray icon.
+      try {
+        await target.tryHandOff(paths);
+      } catch (_) {}
+      return Handoff(paths);
     }
   }
   return Proceed(paths);
@@ -310,24 +320,39 @@ class _LinuxOpenWithPlatform implements OpenWithPlatform {
 
   @override
   Future<bool> tryHandOff(List<String> paths) async {
-    if (paths.isEmpty) return false;
     DBusClient? client;
     try {
       client = DBusClient.session();
       if (!await client.nameHasOwner(openWithBusName)) return false;
-      await client
-          .callMethod(
-            destination: openWithBusName,
-            path: DBusObjectPath(openWithObjectPath),
-            interface: openWithInterface,
-            name: 'Open',
-            values: <DBusValue>[
-              DBusArray.string(paths.map(pathToFileUri)),
-              DBusDict.stringVariant(const <String, DBusValue>{}),
-            ],
-          )
-          .timeout(const Duration(seconds: 3));
-      return true;
+      // Files go to Open; a bare launch asks the owner to raise its
+      // window via Activate. One retry covers an owner still mid-boot.
+      for (var attempt = 0; attempt < 2; attempt++) {
+        try {
+          await client
+              .callMethod(
+                destination: openWithBusName,
+                path: DBusObjectPath(openWithObjectPath),
+                interface: openWithInterface,
+                name: paths.isEmpty ? 'Activate' : 'Open',
+                values: paths.isEmpty
+                    ? <DBusValue>[
+                        DBusDict.stringVariant(const <String, DBusValue>{}),
+                      ]
+                    : <DBusValue>[
+                        DBusArray.string(paths.map(pathToFileUri)),
+                        DBusDict.stringVariant(const <String, DBusValue>{}),
+                      ],
+              )
+              .timeout(const Duration(seconds: 3));
+          return true;
+        } catch (_) {
+          if (attempt == 0) {
+            await Future<void>.delayed(const Duration(milliseconds: 300));
+            if (!await client.nameHasOwner(openWithBusName)) return false;
+          }
+        }
+      }
+      return false;
     } catch (_) {
       return false;
     } finally {
@@ -338,11 +363,11 @@ class _LinuxOpenWithPlatform implements OpenWithPlatform {
   }
 
   @override
-  Future<void> startOwner({
+  Future<bool> startOwner({
     required void Function(List<String> paths) onOpen,
     required void Function() onFocus,
   }) async {
-    if (_busClient != null) return;
+    if (_busClient != null) return true;
     DBusClient? client;
     try {
       client = DBusClient.session();
@@ -359,14 +384,21 @@ class _LinuxOpenWithPlatform implements OpenWithPlatform {
           .timeout(const Duration(seconds: 2));
       if (reply != DBusRequestNameReply.primaryOwner &&
           reply != DBusRequestNameReply.alreadyOwner) {
-        await client.close();
-        return;
+        // Another instance owns the name; this process must not boot.
+        // The refusal is a clean "taken", never an error, so a failing
+        // close must not turn it into an unknown state.
+        try {
+          await client.close();
+        } catch (_) {}
+        return false;
       }
       _busClient = client;
+      return true;
     } catch (_) {
       try {
         await client?.close();
       } catch (_) {}
+      rethrow;
     }
   }
 }
@@ -477,7 +509,7 @@ class _WindowsOpenWithPlatform implements OpenWithPlatform {
       windows.windowsOpenHandoff(paths);
 
   @override
-  Future<void> startOwner({
+  Future<bool> startOwner({
     required void Function(List<String> paths) onOpen,
     required void Function() onFocus,
   }) =>

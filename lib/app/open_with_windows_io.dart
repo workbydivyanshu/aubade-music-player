@@ -33,27 +33,29 @@ Pointer<Void>? _mutex;
 bool _mutexAlreadyExisted = false;
 ReceivePort? _receivePort;
 
-/// True when the launcher should exit: another instance owns the mutex
-/// and accepted the payload (or focus request).
+/// True when the running owner accepted the payload (or focus request).
 Future<bool> windowsOpenHandoff(List<String> paths) async {
   if (!Platform.isWindows) return false;
   if (!_acquireMutex()) return false;
   if (!_mutexAlreadyExisted) return false;
   final payload = encodeWindowsOpenPipeBytes(paths, focus: paths.isEmpty);
   if (payload.isEmpty) return false;
+  if (await _writeToPipe(payload)) return true;
+  // The owner may still be spinning up its pipe server; retry once.
+  await Future<void>.delayed(const Duration(milliseconds: 300));
   return _writeToPipe(payload);
 }
 
-/// Owns the mutex and serves the handoff pipe. No-op when a previous
-/// instance already owns the mutex.
-Future<void> windowsOpenServe({
+/// True when this process acquired the mutex and serves the handoff
+/// pipe; false when another instance already owns it.
+Future<bool> windowsOpenServe({
   required void Function(List<String> paths) onOpen,
   required void Function() onFocus,
 }) async {
-  if (!Platform.isWindows) return;
-  if (!_acquireMutex()) return;
-  if (_mutexAlreadyExisted) return;
-  if (_receivePort != null) return;
+  if (!Platform.isWindows) return false;
+  if (!_acquireMutex()) return true; // Unknown state: boot without serving.
+  if (_mutexAlreadyExisted) return false;
+  if (_receivePort != null) return true;
   final receive = ReceivePort();
   _receivePort = receive;
   receive.listen((message) {
@@ -66,6 +68,7 @@ Future<void> windowsOpenServe({
     if (focus || paths.isNotEmpty) onFocus();
   });
   await Isolate.spawn(_pipeServerMain, receive.sendPort);
+  return true;
 }
 
 /// Creates (or opens) the process-wide mutex.
