@@ -114,6 +114,8 @@ List<WaveMenuEntry> waveTrackMenuItems({
   required String artist,
   String artworkUrl = '',
   String videoId = '',
+  String album = '',
+  int durationSeconds = 0,
   PlayableTrack? playable,
   String? removeLabel,
   VoidCallback? onRemove,
@@ -125,6 +127,8 @@ List<WaveMenuEntry> waveTrackMenuItems({
         artist: artist,
         artworkUrl: artworkUrl,
         videoId: videoId,
+        album: album,
+        durationSeconds: durationSeconds,
       );
   final library = ref.read(playlistRepositoryProvider.notifier);
   final liked = library.likedKeys().contains(track.queueKey);
@@ -135,6 +139,8 @@ List<WaveMenuEntry> waveTrackMenuItems({
         artist: artist,
         artworkUrl: artworkUrl,
         videoId: track.videoId,
+        album: album,
+        durationSeconds: durationSeconds,
       );
 
   final items = <WaveMenuEntry>[
@@ -1155,6 +1161,8 @@ Future<void> showWaveAddToPlaylist(
   required String artist,
   String artworkUrl = '',
   String videoId = '',
+  String album = '',
+  int durationSeconds = 0,
 }) async {
   final playlists = ref.read(playlistRepositoryProvider);
   final stored = StoredTrack(
@@ -1162,6 +1170,8 @@ Future<void> showWaveAddToPlaylist(
     artist: artist,
     artworkUrl: artworkUrl,
     videoId: videoId,
+    album: album,
+    durationSeconds: durationSeconds,
   );
   // The create row closes with -1 — ids are epoch millis, never negative.
   final selected = await showDialog<int>(
@@ -1225,6 +1235,8 @@ Future<bool> waveToggleLike(
   required String artist,
   String artworkUrl = '',
   String videoId = '',
+  String album = '',
+  int durationSeconds = 0,
 }) {
   return ref.read(playlistRepositoryProvider.notifier).toggleLiked(
         StoredTrack(
@@ -1232,6 +1244,8 @@ Future<bool> waveToggleLike(
           artist: artist,
           artworkUrl: artworkUrl,
           videoId: videoId,
+          album: album,
+          durationSeconds: durationSeconds,
         ),
       );
 }

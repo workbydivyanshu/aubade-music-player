@@ -411,7 +411,9 @@ class _QueueRowState extends ConsumerState<_QueueRow> {
             title: t.title,
             artist: t.artist,
             artworkUrl: t.artworkUrl,
-            videoId: t.videoId),
+            videoId: t.videoId,
+            album: t.album,
+            durationSeconds: t.durationSeconds),
       ),
       const WaveMenuSeparator(),
       WaveMenuAction(

@@ -151,6 +151,12 @@ PlayableTrack playableFromGenerated(GeneratedTrack t) =>
     PlayableTrack(
       title: t.name,
       artist: t.artist,
+      // The generated row already knows the album and length: dropping
+      // them would leave the lossless matcher with title+artist only,
+      // so an album cut and a shorter edit of the same title look
+      // identical to it.
+      album: t.album,
+      durationSeconds: t.durationSeconds,
       artworkUrl: t.artworkUrl,
       videoId: t.videoId,
       // Local-library tracks carry a file path: PlaybackService

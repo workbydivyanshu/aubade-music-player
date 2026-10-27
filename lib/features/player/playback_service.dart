@@ -108,6 +108,13 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
   final Map<String, Future<ResolvedStream?>> _resolveInflight = {};
   final Set<String> _prefetchInflight = {};
   String _prefetchSeedKey = '';
+  /// Speculative resolves are chained, never parallel: one neighbour
+  /// assembled at a time keeps the network for the track the user is
+  /// actually hearing. [_prefetchEpoch] retires queued speculative work
+  /// the moment the queue jumps or the track changes.
+  Future<void> _prefetchChain = Future<void>.value();
+  int _prefetchEpoch = 0;
+  bool _audioFlowing = false;
 
   // -- first-audio clock (debug timing only) -------------------------------
   //
@@ -179,13 +186,20 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
   /// exactly the `time_to_audio_ms=7 post_open_ms=-1` ghost.
   void _maybeLogFirstAudio(Duration position) {
     try {
-      if (!kDebugMode) return;
       if (position <= Duration.zero) return;
       if (_audioClockGeneration != _resolveGeneration) return;
       if (_audioOpenDoneAt == null) return;
       final start = _audioClockStart;
       if (start == null || _audioClockKey.isEmpty) return;
       if (state.current?.queueKey != _audioClockKey) return;
+      // Audio is flowing, so the current track's own first-byte wait is
+      // over and speculative work can no longer delay it. Neighbour
+      // prefetch starts here, not after `open` (which returns well
+      // before the first audible packet).
+      _audioClockGeneration = -1;
+      _audioFlowing = true;
+      _prefetchNeighbors();
+      if (!kDebugMode) return;
       final now = DateTime.now();
       final totalMs = now.difference(start).inMilliseconds;
       final openDone = _audioOpenDoneAt;
@@ -193,7 +207,6 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
           openDone != null ? now.difference(openDone).inMilliseconds : -1;
       _logTiming('audio key=$_audioClockKey time_to_audio_ms=$totalMs '
           'post_open_ms=$postOpenMs');
-      _audioClockGeneration = -1;
     } catch (_) {}
   }
 
@@ -348,6 +361,11 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
         runGuarded('player.duration', () {
           if (_resolving || state.error != null) return;
           state = state.copyWith(duration: v);
+          // mpv's clock is the truth for the playing track's length.
+          // Write it back to the queue entry so a row that started
+          // without one keeps its length, survives a session restore,
+          // and reaches the lossless matcher on the next resolve.
+          if (v > Duration.zero) _rememberQueueDuration(v);
           // Keep scrobble duration in sync with the track that owns the
           // current window — not the next track that has already been
           // written to state during resolve.
@@ -899,6 +917,7 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
   Future<void> stopAndClear() async {
     _flushScrobble(completed: false);
     _resolveGeneration++;
+    _cancelPrefetch();
     _resolving = false;
     _resolvingIndex = -1;
     _activeQueueKey = '';
@@ -945,6 +964,7 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
       return;
     }
     final generation = ++_resolveGeneration;
+    _cancelPrefetch();
     _resolving = true;
     _resolvingIndex = index;
     _playbackAttempt = attempt;
@@ -977,7 +997,6 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
         return;
       }
       _beginScrobbleWindow(track);
-      _prefetchNeighbors();
       final local = _localStream(track);
       if (local != null) {
         _resolving = false;
@@ -1041,7 +1060,6 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
             'total_ms=${totalSw.elapsedMilliseconds}');
       }
       if (generation != _resolveGeneration) return;
-      _prefetchNeighbors();
       _maybeRefillRadio();
     } catch (_) {
       if (generation != _resolveGeneration) return;
@@ -1157,6 +1175,11 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
         title: track.title,
         artist: track.artist,
         album: track.album,
+        // The row's own length separates the album cut from a short or
+        // long variant of the same title (the addon gate is +/-8s);
+        // zero when the source never carried it, in which case the
+        // matcher falls back to catalog consensus.
+        expectedDurationSeconds: track.durationSeconds,
         preferredQuality: _prefs.losslessQuality,
       );
       losslessSw.stop();
@@ -1269,6 +1292,32 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     return null;
   }
 
+  /// Fill the playing queue entry's length from mpv when the source row
+  /// never carried one. A length the row already knew is left alone: it
+  /// is the metadata the lossless matcher gates on (+/-8s), so a slightly
+  /// different stream duration must not rewrite it.
+  void _rememberQueueDuration(Duration duration) {
+    try {
+      final key = _activeQueueKey;
+      if (key.isEmpty || duration <= Duration.zero) return;
+      final idx = state.queue.indexWhere((t) => t.queueKey == key);
+      if (idx < 0) return;
+      final cur = state.queue[idx];
+      final updated = playableWithResolvedMetadata(
+        cur,
+        durationSeconds: duration.inSeconds,
+      );
+      if (identical(updated, cur)) return;
+      final queue = List<PlayableTrack>.of(state.queue);
+      queue[idx] = updated;
+      state = state.copyWith(
+        queue: queue,
+        current: idx == state.currentIndex ? updated : state.current,
+      );
+      _schedulePersist();
+    } catch (_) {}
+  }
+
   /// Write a newly matched videoId back into the queue entry so future
   /// plays hit the instant path without another search.
   void _adoptVideoId(
@@ -1279,11 +1328,17 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
       if (idx < 0) return;
       final cur = state.queue[idx];
       if (cur.videoId.isNotEmpty) return;
-      final updated = cur.copyWith(
-        videoId: videoId,
-        artworkUrl: OfficialArtworkService.isOfficialArtwork(cur.artworkUrl)
-            ? cur.artworkUrl
-            : (match.artworkUrl.isNotEmpty ? match.artworkUrl : cur.artworkUrl),
+      final updated = playableWithResolvedMetadata(
+        cur.copyWith(
+          videoId: videoId,
+          artworkUrl: OfficialArtworkService.isOfficialArtwork(cur.artworkUrl)
+              ? cur.artworkUrl
+              : (match.artworkUrl.isNotEmpty
+                  ? match.artworkUrl
+                  : cur.artworkUrl),
+        ),
+        album: match.album,
+        durationSeconds: match.durationSeconds,
       );
       final queue = List<PlayableTrack>.of(state.queue);
       queue[idx] = updated;
@@ -1294,22 +1349,47 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     } catch (_) {}
   }
 
-  /// Warm previous, next, and next+1 stream URLs plus studio artwork.
-  /// Does not open mpv and never injects a playlist item.
-  void _prefetchNeighbors() {
+  /// Warm the queue around the current track: `next`/`prev` stream URLs
+  /// plus studio artwork, never opening mpv or injecting a queue item.
+  /// `next+1` only joins once the current track is past halfway
+  /// ([_maybePrefetchFromPosition]), because a third speculative
+  /// assembly competes with the playing track's own segments.
+  ///
+  /// Work is chained on [_prefetchChain] so one neighbour assembles at a
+  /// time, current side first. The first kick-off waits for the current
+  /// track's first audio (see [_maybeLogFirstAudio]); a queue jump or
+  /// track change bumps [_prefetchEpoch], which retires queued work and
+  /// discards an in-flight result.
+  void _prefetchNeighbors({bool lookahead = false}) {
     try {
-      final indices = <int>{};
+      if (!_audioFlowing) return;
+      final epoch = _prefetchEpoch;
+      final indices = <int>[];
       void add(int? i) {
-        if (i != null && i != state.currentIndex) indices.add(i);
+        if (i != null && i != state.currentIndex && !indices.contains(i)) {
+          indices.add(i);
+        }
       }
 
       add(_neighborIndex(1));
       add(_neighborIndex(-1));
-      add(_neighborIndex(2));
+      if (lookahead) add(_neighborIndex(2));
       for (final i in indices) {
-        unawaited(_prefetchIndex(i));
+        _prefetchChain = _prefetchChain.then((_) async {
+          if (epoch != _prefetchEpoch) return;
+          await _prefetchIndex(i, epoch);
+        });
       }
     } catch (_) {}
+  }
+
+  /// Retire queued neighbour work and ignore any result still in
+  /// flight. The network call itself is not abortable; keeping it on
+  /// [_prefetchChain] means the next track's prefetch waits for it
+  /// instead of assembling in parallel.
+  void _cancelPrefetch() {
+    _prefetchEpoch++;
+    _audioFlowing = false;
   }
 
   int? _neighborIndex(int delta) {
@@ -1335,7 +1415,8 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     return null;
   }
 
-  Future<void> _prefetchIndex(int index) async {
+  Future<void> _prefetchIndex(int index, int epoch) async {
+    if (epoch != _prefetchEpoch || !_audioFlowing) return;
     if (index < 0 || index >= state.queue.length) return;
     final track = state.queue[index];
     if (_unavailable.contains(track.queueKey)) return;
@@ -1354,6 +1435,7 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     if (!_prefetchInflight.add(track.queueKey)) return;
     try {
       final stream = await _resolveRemote(track);
+      if (epoch != _prefetchEpoch) return;
       if (stream != null && stream.artworkUrl.isNotEmpty) {
         OfficialArtworkService.instance.rememberTrack(
           title: track.title,
@@ -1391,7 +1473,9 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     final key = state.current?.queueKey ?? '';
     if (key.isEmpty || key == _prefetchSeedKey) return;
     _prefetchSeedKey = key;
-    _prefetchNeighbors();
+    // Past halfway this track's own segments are mostly on disk, so the
+    // third (lookahead) slot is cheap enough to queue.
+    _prefetchNeighbors(lookahead: true);
   }
 
   Future<void> _open(PlayableTrack track, ResolvedStream stream,
@@ -1410,12 +1494,16 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     // Upgrade track artwork if lossless stream supplied official studio artwork
     var effectiveTrack = track;
     if (stream.artworkUrl.isNotEmpty && stream.artworkUrl != track.artworkUrl) {
-      effectiveTrack = effectiveTrack.copyWith(
-        artworkUrl: stream.artworkUrl,
-        album: stream.albumTitle.isNotEmpty && effectiveTrack.album.isEmpty
-            ? stream.albumTitle
-            : effectiveTrack.album,
-      );
+      effectiveTrack = effectiveTrack.copyWith(artworkUrl: stream.artworkUrl);
+    }
+    // The stream knows the album even when it carries no artwork; the
+    // old artwork-gated block threw that away and left queue rows with
+    // no album. Length arrives from mpv in the duration listener.
+    effectiveTrack = playableWithResolvedMetadata(
+      effectiveTrack,
+      album: stream.albumTitle,
+    );
+    if (!identical(effectiveTrack, track)) {
       final idx = state.queue.indexWhere((t) => t.queueKey == wantedQueueKey);
       if (idx >= 0) {
         final q = List<PlayableTrack>.of(state.queue);
@@ -1794,6 +1882,7 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
                 album: t.album,
                 artworkUrl: t.artworkUrl,
                 videoId: t.videoId,
+                durationSeconds: t.durationSeconds,
               ))
           .toList();
       if (fresh.isEmpty) return;
@@ -2174,6 +2263,31 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
               .clamp(0, 1 << 31)),
     );
   }
+}
+
+/// Carry metadata learned while resolving a track onto the queue entry
+/// the player shows and re-resolves. A value the source row already knew
+/// wins; an empty album or zero length is filled from the catalog match,
+/// the lossless stream, or mpv's own duration clock.
+///
+/// The length matters beyond the row: the lossless matcher uses it to
+/// separate the album cut from a radio edit (the addon gate is +/-8s).
+PlayableTrack playableWithResolvedMetadata(
+  PlayableTrack track, {
+  String album = '',
+  int durationSeconds = 0,
+}) {
+  final resolvedAlbum = album.trim();
+  final nextAlbum = track.album.isNotEmpty || resolvedAlbum.isEmpty
+      ? track.album
+      : resolvedAlbum;
+  final nextDuration = track.durationSeconds > 0 || durationSeconds <= 0
+      ? track.durationSeconds
+      : durationSeconds;
+  if (nextAlbum == track.album && nextDuration == track.durationSeconds) {
+    return track;
+  }
+  return track.copyWith(album: nextAlbum, durationSeconds: nextDuration);
 }
 
 /// Thin prefs/session adapters to keep the service testable.

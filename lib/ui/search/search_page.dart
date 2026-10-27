@@ -93,6 +93,7 @@ PlayableTrack playableFromSearch(SearchResultItem e) => PlayableTrack(
   album: e.subtitle,
   artworkUrl: e.artworkUrl,
   videoId: e.videoId,
+  durationSeconds: e.durationSeconds,
   playbackUrl: e.videoId,
 );
 
