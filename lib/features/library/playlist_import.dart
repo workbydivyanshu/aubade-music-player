@@ -135,6 +135,8 @@ Future<PlaylistImportPreview> previewPlaylistLinkWith(
             artist: t.artist,
             artworkUrl: t.artworkUrl,
             videoId: t.videoId,
+            album: t.album,
+            durationSeconds: t.durationSeconds,
           ),
       ],
     );
@@ -230,6 +232,8 @@ Future<List<StoredTrack>> _matchRows(
         artist: row.artist.isNotEmpty ? row.artist : match.artist,
         artworkUrl: match.artworkUrl,
         videoId: match.videoId,
+        album: row.album ?? match.album,
+        durationSeconds: match.durationSeconds,
       ));
     }
   }
