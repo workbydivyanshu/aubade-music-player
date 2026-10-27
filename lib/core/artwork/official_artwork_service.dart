@@ -695,10 +695,19 @@ class OfficialArtworkService {
     String clean,
     String raw,
   ) async {
+    // Artist portraits: a collab billing searches by the primary
+    // artist, not the whole credit string, so "Drexler, Performer"
+    // still resolves the billed lead's portrait.
+    final searchName =
+        RegExp(r',|&|\bfeat', caseSensitive: false).hasMatch(clean)
+            ? (primaryArtistName(clean).isNotEmpty
+                ? primaryArtistName(clean)
+                : clean)
+            : clean;
     try {
       final res = await _dio.get<dynamic>(
         'https://api.deezer.com/search/artist',
-        queryParameters: {'q': clean, 'limit': '10'},
+        queryParameters: {'q': searchName, 'limit': '10'},
       );
       dynamic rawData = res.data;
       if (rawData is String && rawData.isNotEmpty) {
@@ -785,11 +794,21 @@ class OfficialArtworkService {
     // Query iTunes and Deezer together, then pick the GLOBAL best.
     // Returning from the first iTunes substring hit used to skip the
     // real sleeve sitting in Deezer (Piranha vs Piranha Pt. 2).
+    // A collab billing ("Composer, Performer & X") also gets a
+    // primary-artist query: the catalogs often show no hit for the
+    // full credit but one for the billed lead.
+    final cleanPrimary = primaryArtistName(cleanArtist);
+    final rawPrimary = primaryArtistName(rawArtist);
+
     final catalogs = await Future.wait([
       if (cleanArtist.isNotEmpty)
         _itunesSearch('$cleanArtist $cleanTitle', 'song', '25'),
+      if (cleanPrimary.isNotEmpty && cleanPrimary != cleanArtist)
+        _itunesSearch('$cleanPrimary $cleanTitle', 'song', '25'),
       _itunesSearch(cleanTitle, 'song', '25'),
       if (rawArtist.isNotEmpty) _deezerTrackHits('$rawArtist $rawTitle'),
+      if (rawPrimary.isNotEmpty && rawPrimary != rawArtist)
+        _deezerTrackHits('$rawPrimary $rawTitle'),
       _deezerTrackHits(rawTitle),
     ]);
     final match = _findBestMatch(
