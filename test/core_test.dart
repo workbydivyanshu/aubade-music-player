@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:aubade/core/network/lastfm_crypto.dart';
 import 'package:aubade/features/innertube/innertube_api.dart';
 import 'package:aubade/features/innertube/signature_decipher.dart';
+import 'package:aubade/features/library/playlists.dart';
 import 'package:aubade/features/lyrics/lyrics_models.dart';
 import 'package:aubade/features/lyrics/lyrics_repository.dart';
 
@@ -374,6 +375,44 @@ void main() {
     test('detects Arabic text', () {
       expect(isRtlText('مرحبا بالعالم'), isTrue);
       expect(isRtlText('Hello world'), isFalse);
+    });
+  });
+
+  group('queued track metadata round-trip', () {
+    test('StoredTrack keeps album and length through JSON', () {
+      const track = StoredTrack(
+        name: 'Golden Hour',
+        artist: 'JVKE',
+        album: 'This Is What Space Feels Like',
+        durationSeconds: 212,
+      );
+      final roundTrip = StoredTrack.fromJson(track.toJson());
+      expect(roundTrip.album, 'This Is What Space Feels Like');
+      expect(roundTrip.durationSeconds, 212);
+      expect(roundTrip.name, 'Golden Hour');
+    });
+
+    test('rows written before these fields read back empty/zero', () {
+      final legacy = StoredTrack.fromJson({
+        'name': 'Golden Hour',
+        'artist': 'JVKE',
+        'artworkUrl': '',
+        'videoId': 'abc123',
+      });
+      expect(legacy.album, '');
+      expect(legacy.durationSeconds, 0);
+    });
+
+    test('toPlayable carries album and length onto the queue entry', () {
+      const track = StoredTrack(
+        name: 'Golden Hour',
+        artist: 'JVKE',
+        album: 'This Is What Space Feels Like',
+        durationSeconds: 212,
+      );
+      final playable = track.toPlayable();
+      expect(playable.album, 'This Is What Space Feels Like');
+      expect(playable.durationSeconds, 212);
     });
   });
 }
