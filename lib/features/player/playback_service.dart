@@ -361,6 +361,11 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
         runGuarded('player.duration', () {
           if (_resolving || state.error != null) return;
           state = state.copyWith(duration: v);
+          // mpv's clock is the truth for the playing track's length.
+          // Write it back to the queue entry so a row that started
+          // without one keeps its length, survives a session restore,
+          // and reaches the lossless matcher on the next resolve.
+          if (v > Duration.zero) _rememberQueueDuration(v);
           // Keep scrobble duration in sync with the track that owns the
           // current window — not the next track that has already been
           // written to state during resolve.
@@ -1170,6 +1175,11 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
         title: track.title,
         artist: track.artist,
         album: track.album,
+        // The row's own length separates the album cut from a short or
+        // long variant of the same title (the addon gate is +/-8s);
+        // zero when the source never carried it, in which case the
+        // matcher falls back to catalog consensus.
+        expectedDurationSeconds: track.durationSeconds,
         preferredQuality: _prefs.losslessQuality,
       );
       losslessSw.stop();
@@ -1282,6 +1292,32 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     return null;
   }
 
+  /// Fill the playing queue entry's length from mpv when the source row
+  /// never carried one. A length the row already knew is left alone: it
+  /// is the metadata the lossless matcher gates on (+/-8s), so a slightly
+  /// different stream duration must not rewrite it.
+  void _rememberQueueDuration(Duration duration) {
+    try {
+      final key = _activeQueueKey;
+      if (key.isEmpty || duration <= Duration.zero) return;
+      final idx = state.queue.indexWhere((t) => t.queueKey == key);
+      if (idx < 0) return;
+      final cur = state.queue[idx];
+      final updated = playableWithResolvedMetadata(
+        cur,
+        durationSeconds: duration.inSeconds,
+      );
+      if (identical(updated, cur)) return;
+      final queue = List<PlayableTrack>.of(state.queue);
+      queue[idx] = updated;
+      state = state.copyWith(
+        queue: queue,
+        current: idx == state.currentIndex ? updated : state.current,
+      );
+      _schedulePersist();
+    } catch (_) {}
+  }
+
   /// Write a newly matched videoId back into the queue entry so future
   /// plays hit the instant path without another search.
   void _adoptVideoId(
@@ -1292,11 +1328,17 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
       if (idx < 0) return;
       final cur = state.queue[idx];
       if (cur.videoId.isNotEmpty) return;
-      final updated = cur.copyWith(
-        videoId: videoId,
-        artworkUrl: OfficialArtworkService.isOfficialArtwork(cur.artworkUrl)
-            ? cur.artworkUrl
-            : (match.artworkUrl.isNotEmpty ? match.artworkUrl : cur.artworkUrl),
+      final updated = playableWithResolvedMetadata(
+        cur.copyWith(
+          videoId: videoId,
+          artworkUrl: OfficialArtworkService.isOfficialArtwork(cur.artworkUrl)
+              ? cur.artworkUrl
+              : (match.artworkUrl.isNotEmpty
+                  ? match.artworkUrl
+                  : cur.artworkUrl),
+        ),
+        album: match.album,
+        durationSeconds: match.durationSeconds,
       );
       final queue = List<PlayableTrack>.of(state.queue);
       queue[idx] = updated;
@@ -1452,12 +1494,16 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     // Upgrade track artwork if lossless stream supplied official studio artwork
     var effectiveTrack = track;
     if (stream.artworkUrl.isNotEmpty && stream.artworkUrl != track.artworkUrl) {
-      effectiveTrack = effectiveTrack.copyWith(
-        artworkUrl: stream.artworkUrl,
-        album: stream.albumTitle.isNotEmpty && effectiveTrack.album.isEmpty
-            ? stream.albumTitle
-            : effectiveTrack.album,
-      );
+      effectiveTrack = effectiveTrack.copyWith(artworkUrl: stream.artworkUrl);
+    }
+    // The stream knows the album even when it carries no artwork; the
+    // old artwork-gated block threw that away and left queue rows with
+    // no album. Length arrives from mpv in the duration listener.
+    effectiveTrack = playableWithResolvedMetadata(
+      effectiveTrack,
+      album: stream.albumTitle,
+    );
+    if (!identical(effectiveTrack, track)) {
       final idx = state.queue.indexWhere((t) => t.queueKey == wantedQueueKey);
       if (idx >= 0) {
         final q = List<PlayableTrack>.of(state.queue);
@@ -1836,6 +1882,7 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
                 album: t.album,
                 artworkUrl: t.artworkUrl,
                 videoId: t.videoId,
+                durationSeconds: t.durationSeconds,
               ))
           .toList();
       if (fresh.isEmpty) return;
@@ -2216,6 +2263,31 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
               .clamp(0, 1 << 31)),
     );
   }
+}
+
+/// Carry metadata learned while resolving a track onto the queue entry
+/// the player shows and re-resolves. A value the source row already knew
+/// wins; an empty album or zero length is filled from the catalog match,
+/// the lossless stream, or mpv's own duration clock.
+///
+/// The length matters beyond the row: the lossless matcher uses it to
+/// separate the album cut from a radio edit (the addon gate is +/-8s).
+PlayableTrack playableWithResolvedMetadata(
+  PlayableTrack track, {
+  String album = '',
+  int durationSeconds = 0,
+}) {
+  final resolvedAlbum = album.trim();
+  final nextAlbum = track.album.isNotEmpty || resolvedAlbum.isEmpty
+      ? track.album
+      : resolvedAlbum;
+  final nextDuration = track.durationSeconds > 0 || durationSeconds <= 0
+      ? track.durationSeconds
+      : durationSeconds;
+  if (nextAlbum == track.album && nextDuration == track.durationSeconds) {
+    return track;
+  }
+  return track.copyWith(album: nextAlbum, durationSeconds: nextDuration);
 }
 
 /// Thin prefs/session adapters to keep the service testable.
