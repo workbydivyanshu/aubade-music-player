@@ -19,7 +19,7 @@ const kUpdateRepoOwner = 'workbydivyanshu';
 const kUpdateRepoName = 'aubade-music-player';
 /// Only used when the runtime version can't be read; source of truth is
 /// pubspec.yaml.
-const kFallbackAppVersion = '1.0.6';
+const kFallbackAppVersion = '1.0.7';
 
 /// Minimum interval between automatic background update checks.
 const kBackgroundCheckInterval = Duration(hours: 12);
