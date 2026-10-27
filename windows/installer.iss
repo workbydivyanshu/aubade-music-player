@@ -36,15 +36,23 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\build\windows\installer
 OutputBaseFilename=aubade_{#MyAppVersion}_windows-x86_64-setup
-Compression=lzma2/ultra64
-SolidCompression=yes
+Compression=zip/1
+SolidCompression=no
+SetupIconFile=runner\resources\app_icon.ico
+SignedUninstaller=no
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
 DisableProgramGroupPage=yes
-; No LicenseFile/SetupIconFile yet: no license text or .ico asset in
-; the repo. Add both when they land.
+VersionInfoVersion={#MyAppVersion}
+VersionInfoTextVersion={#MyAppVersion}
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoProductTextVersion={#MyAppVersion}
+; No LicenseFile yet: no license text in the repo. Add it when it lands.
+; zip/1 with metadata fields and an explicit icon avoids antivirus
+; false positives caused by solid ultra-compressed unsigned-looking
+; installers; the setup stays a few MB larger on purpose.
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
