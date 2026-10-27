@@ -37,11 +37,8 @@ final waveLyricsProvider = StreamProvider.autoDispose
   final durationSecs =
       ref.read(playbackServiceProvider).duration.inSeconds;
   final results = StreamController<LyricsResult>();
-  var disposed = false;
-  ref.onDispose(() {
-    disposed = true;
-    unawaited(results.close());
-  });
+  final guard = LyricsStreamGuard(results);
+  ref.onDispose(guard.dispose);
   unawaited(repo.getLyrics(
     title: current.title,
     artist: current.artist,
@@ -51,18 +48,50 @@ final waveLyricsProvider = StreamProvider.autoDispose
     videoId: current.videoId.isNotEmpty ? current.videoId : null,
     preferredProviderId: override ?? prefs.lyricsProviderId,
     excludeProviderIds: excludes,
-    onPartialResult: (result) {
-      if (!disposed) results.add(result);
-    },
-  ).then((result) {
-    if (!disposed) results.add(result);
-  }, onError: (Object error, StackTrace stack) {
-    if (!disposed) results.addError(error, stack);
-  }).whenComplete(() {
-    if (!disposed) unawaited(results.close());
-  }));
+    onPartialResult: guard.emit,
+  ).then(guard.emit, onError: guard.fail).whenComplete(guard.finish));
   return results.stream;
 });
+
+/// Guarded writer for the lyrics provider's single-subscription stream.
+///
+/// A fetch can resolve after the provider is disposed (the route or track
+/// changed mid-flight), and a result can also arrive after the stream was
+/// already closed for content. Either way, writing straight to the
+/// controller throws `Cannot add event after closing`, so every emit,
+/// error, and close checks both lifecycle flags and the controller state
+/// first. Late results are dropped instead of escaping.
+class LyricsStreamGuard {
+  LyricsStreamGuard(this._controller);
+
+  final StreamController<LyricsResult> _controller;
+  bool _disposed = false;
+  bool _closed = false;
+
+  bool get isClosed => _closed;
+
+  void emit(LyricsResult result) {
+    if (_disposed || _closed || _controller.isClosed) return;
+    _controller.add(result);
+  }
+
+  void fail(Object error, StackTrace stack) {
+    if (_disposed || _closed || _controller.isClosed) return;
+    _controller.addError(error, stack);
+  }
+
+  void finish() {
+    if (_disposed || _closed) return;
+    _closed = true;
+    unawaited(_controller.close());
+  }
+
+  void dispose() {
+    _disposed = true;
+    _closed = true;
+    unawaited(_controller.close());
+  }
+}
 
 /// Premium Apple Music Karaoke lyrics reading experience.
 ///
