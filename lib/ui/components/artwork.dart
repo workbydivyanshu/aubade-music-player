@@ -13,15 +13,17 @@ export '../../core/artwork/artwork_resolver.dart' show ArtworkKind;
 /// Physical-pixel decode bucket for an artwork tile of [logicalSize] dp
 /// rendered at [devicePixelRatio].
 ///
-/// Buckets snap UP to 320 / 640 / 1024 so a tier keeps one stable cache
-/// key regardless of the tile's exact size; only tiles wanting more than
-/// 1024 physical px return null, which decodes at native resolution.
+/// Decodes at the size the tile can actually paint (layout dp times DPR),
+/// not a fixed floor. The requested edge snaps UP to a 16px grid so
+/// neighbouring sizes still share one cache key, while the overshoot stays
+/// within a step of what the tile shows. 1024 physical px remains the top
+/// bucket so huge displays never ask for the CDN's 1400px master. Returns
+/// null for non-positive sizes, where no decode hint is meaningful.
 int? artworkDecodeBucket(double logicalSize, double devicePixelRatio) {
   final int targetPhysical = (logicalSize * devicePixelRatio).ceil();
-  if (targetPhysical <= 320) return 320;
-  if (targetPhysical <= 640) return 640;
-  if (targetPhysical <= 1024) return 1024;
-  return null;
+  if (targetPhysical <= 0) return null;
+  final int snapped = ((targetPhysical + 15) ~/ 16) * 16;
+  return snapped < 1024 ? snapped : 1024;
 }
 
 /// Canonical artwork primitive — pure image, no dashboard borders.
@@ -490,25 +492,24 @@ class _WaveArtworkState extends State<WaveArtwork> {
   @override
   Widget build(BuildContext context) {
     final dark = waveIsDark(context);
-    // Tiered, DPR-aware decode bucketing.
+    // DPR-aware decode sizing: decode at most the pixels we can paint.
     //
     // Previously every tile decoded at min(size * dpr, 1024) backing px,
     // so official covers shipping at 1400×1400 (about 7.8 MB RGBA each)
     // pinned the old 50 MiB imageCache to a handful of entries and made
-    // scrolling re-decode constantly.
+    // scrolling re-decode constantly. A fixed 320px floor then made even
+    // small tiles decode far more pixels than they can ever show.
     //
-    // Buckets snap UP to 320 / 640 / 1024 physical px so a given tier
-    // keeps one stable cache key regardless of the tile's exact size;
-    // only tiles wanting more than 1024 physical px fall through to
-    // native resolution.
-    final int? decodeBucket = artworkDecodeBucket(
-      widget.size,
-      MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0,
-    );
+    // The requested edge is `size × dpr` snapped UP to a 16px grid so
+    // neighbouring sizes share a cache key without over-decoding; 1024
+    // physical px stays the top bucket for huge displays.
+    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0;
+    final int targetPhysical = (widget.size * dpr).ceil();
+    final int? decodeBucket = artworkDecodeBucket(widget.size, dpr);
     // On-disk copy must never be smaller than the decode bucket, or the
-    // 640 tier would decode by upscaling a 512px file. Keeps the original
-    // 512/1024 split for every tier.
-    final int diskCache = decodeBucket == 320 ? 512 : 1024;
+    // smallest tier would decode by upscaling a 512px file. Keeps the
+    // original 512/1024 split.
+    final int diskCache = targetPhysical <= 320 ? 512 : 1024;
     // Local artwork needs no resolver: the file is already on disk.
     // Missing/broken files degrade to the tonal initials fallback.
     if (_isLocalFile && widget.url.isNotEmpty) {
