@@ -108,6 +108,13 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
   final Map<String, Future<ResolvedStream?>> _resolveInflight = {};
   final Set<String> _prefetchInflight = {};
   String _prefetchSeedKey = '';
+  /// Speculative resolves are chained, never parallel: one neighbour
+  /// assembled at a time keeps the network for the track the user is
+  /// actually hearing. [_prefetchEpoch] retires queued speculative work
+  /// the moment the queue jumps or the track changes.
+  Future<void> _prefetchChain = Future<void>.value();
+  int _prefetchEpoch = 0;
+  bool _audioFlowing = false;
 
   // -- first-audio clock (debug timing only) -------------------------------
   //
@@ -179,13 +186,20 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
   /// exactly the `time_to_audio_ms=7 post_open_ms=-1` ghost.
   void _maybeLogFirstAudio(Duration position) {
     try {
-      if (!kDebugMode) return;
       if (position <= Duration.zero) return;
       if (_audioClockGeneration != _resolveGeneration) return;
       if (_audioOpenDoneAt == null) return;
       final start = _audioClockStart;
       if (start == null || _audioClockKey.isEmpty) return;
       if (state.current?.queueKey != _audioClockKey) return;
+      // Audio is flowing, so the current track's own first-byte wait is
+      // over and speculative work can no longer delay it. Neighbour
+      // prefetch starts here, not after `open` (which returns well
+      // before the first audible packet).
+      _audioClockGeneration = -1;
+      _audioFlowing = true;
+      _prefetchNeighbors();
+      if (!kDebugMode) return;
       final now = DateTime.now();
       final totalMs = now.difference(start).inMilliseconds;
       final openDone = _audioOpenDoneAt;
@@ -193,7 +207,6 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
           openDone != null ? now.difference(openDone).inMilliseconds : -1;
       _logTiming('audio key=$_audioClockKey time_to_audio_ms=$totalMs '
           'post_open_ms=$postOpenMs');
-      _audioClockGeneration = -1;
     } catch (_) {}
   }
 
@@ -899,6 +912,7 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
   Future<void> stopAndClear() async {
     _flushScrobble(completed: false);
     _resolveGeneration++;
+    _cancelPrefetch();
     _resolving = false;
     _resolvingIndex = -1;
     _activeQueueKey = '';
@@ -945,6 +959,7 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
       return;
     }
     final generation = ++_resolveGeneration;
+    _cancelPrefetch();
     _resolving = true;
     _resolvingIndex = index;
     _playbackAttempt = attempt;
@@ -977,7 +992,6 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
         return;
       }
       _beginScrobbleWindow(track);
-      _prefetchNeighbors();
       final local = _localStream(track);
       if (local != null) {
         _resolving = false;
@@ -1041,7 +1055,6 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
             'total_ms=${totalSw.elapsedMilliseconds}');
       }
       if (generation != _resolveGeneration) return;
-      _prefetchNeighbors();
       _maybeRefillRadio();
     } catch (_) {
       if (generation != _resolveGeneration) return;
@@ -1294,22 +1307,47 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     } catch (_) {}
   }
 
-  /// Warm previous, next, and next+1 stream URLs plus studio artwork.
-  /// Does not open mpv and never injects a playlist item.
-  void _prefetchNeighbors() {
+  /// Warm the queue around the current track: `next`/`prev` stream URLs
+  /// plus studio artwork, never opening mpv or injecting a queue item.
+  /// `next+1` only joins once the current track is past halfway
+  /// ([_maybePrefetchFromPosition]), because a third speculative
+  /// assembly competes with the playing track's own segments.
+  ///
+  /// Work is chained on [_prefetchChain] so one neighbour assembles at a
+  /// time, current side first. The first kick-off waits for the current
+  /// track's first audio (see [_maybeLogFirstAudio]); a queue jump or
+  /// track change bumps [_prefetchEpoch], which retires queued work and
+  /// discards an in-flight result.
+  void _prefetchNeighbors({bool lookahead = false}) {
     try {
-      final indices = <int>{};
+      if (!_audioFlowing) return;
+      final epoch = _prefetchEpoch;
+      final indices = <int>[];
       void add(int? i) {
-        if (i != null && i != state.currentIndex) indices.add(i);
+        if (i != null && i != state.currentIndex && !indices.contains(i)) {
+          indices.add(i);
+        }
       }
 
       add(_neighborIndex(1));
       add(_neighborIndex(-1));
-      add(_neighborIndex(2));
+      if (lookahead) add(_neighborIndex(2));
       for (final i in indices) {
-        unawaited(_prefetchIndex(i));
+        _prefetchChain = _prefetchChain.then((_) async {
+          if (epoch != _prefetchEpoch) return;
+          await _prefetchIndex(i, epoch);
+        });
       }
     } catch (_) {}
+  }
+
+  /// Retire queued neighbour work and ignore any result still in
+  /// flight. The network call itself is not abortable; keeping it on
+  /// [_prefetchChain] means the next track's prefetch waits for it
+  /// instead of assembling in parallel.
+  void _cancelPrefetch() {
+    _prefetchEpoch++;
+    _audioFlowing = false;
   }
 
   int? _neighborIndex(int delta) {
@@ -1335,7 +1373,8 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     return null;
   }
 
-  Future<void> _prefetchIndex(int index) async {
+  Future<void> _prefetchIndex(int index, int epoch) async {
+    if (epoch != _prefetchEpoch || !_audioFlowing) return;
     if (index < 0 || index >= state.queue.length) return;
     final track = state.queue[index];
     if (_unavailable.contains(track.queueKey)) return;
@@ -1354,6 +1393,7 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     if (!_prefetchInflight.add(track.queueKey)) return;
     try {
       final stream = await _resolveRemote(track);
+      if (epoch != _prefetchEpoch) return;
       if (stream != null && stream.artworkUrl.isNotEmpty) {
         OfficialArtworkService.instance.rememberTrack(
           title: track.title,
@@ -1391,7 +1431,9 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     final key = state.current?.queueKey ?? '';
     if (key.isEmpty || key == _prefetchSeedKey) return;
     _prefetchSeedKey = key;
-    _prefetchNeighbors();
+    // Past halfway this track's own segments are mostly on disk, so the
+    // third (lookahead) slot is cheap enough to queue.
+    _prefetchNeighbors(lookahead: true);
   }
 
   Future<void> _open(PlayableTrack track, ResolvedStream stream,
