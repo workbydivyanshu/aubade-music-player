@@ -601,6 +601,11 @@ class _WaveKaraokeLyricLineState extends State<WaveKaraokeLyricLine> {
     final reduceMotion = WaveMotion.respectReduce(context);
 
     final baseFontSize = widget.fontSize ?? (widget.compact ? 28.0 : 36.0);
+    // Negative tracking tightens Latin type, but in joined scripts (the
+    // Devanagari headline bar) neighbouring glyphs then overlap, and the
+    // translucent idle colour composites twice there — bright dots at
+    // every join. Those scripts keep their natural advance.
+    final tracking = isJoinedScript(widget.line.text) ? 0.0 : -0.3;
 
     final activeTextColor = dark ? const Color(0xFFF6F4EF) : const Color(0xFF18181B);
     final idleTextColor = (dark ? const Color(0xFFF6F4EF) : const Color(0xFF18181B))
@@ -613,7 +618,7 @@ class _WaveKaraokeLyricLineState extends State<WaveKaraokeLyricLine> {
       fontWeight: FontWeight.w700,
       color: activeTextColor,
       height: 1.42,
-      letterSpacing: -0.3,
+      letterSpacing: tracking,
       shadows: widget.isActive
           ? [
               Shadow(
@@ -631,7 +636,7 @@ class _WaveKaraokeLyricLineState extends State<WaveKaraokeLyricLine> {
       fontWeight: FontWeight.w700,
       color: activeTextColor.withValues(alpha: 0.38),
       height: 1.42,
-      letterSpacing: -0.3,
+      letterSpacing: tracking,
     );
 
     final idleStyle = TextStyle(
@@ -641,7 +646,7 @@ class _WaveKaraokeLyricLineState extends State<WaveKaraokeLyricLine> {
           ? (dark ? Colors.white : Colors.black).withValues(alpha: 0.88)
           : idleTextColor,
       height: 1.42,
-      letterSpacing: -0.3,
+      letterSpacing: tracking,
     );
 
     Widget content;
@@ -699,13 +704,19 @@ class _WaveKaraokeLyricLineState extends State<WaveKaraokeLyricLine> {
       }
     } else {
       // Standard line-timed or idle line
+      final fade = widget.isActive
+          ? (style: activeStyle, alpha: 1.0)
+          : _groupFade(idleStyle, widget.line.text);
       content = Text(
         widget.line.text,
-        style: widget.isActive ? activeStyle : idleStyle,
+        style: fade.style,
         textDirection: widget.line.isRtl ? TextDirection.rtl : TextDirection.ltr,
         softWrap: true,
         overflow: TextOverflow.visible,
       );
+      if (fade.alpha < 1.0) {
+        content = Opacity(opacity: fade.alpha, child: content);
+      }
     }
 
     final showBlur =
@@ -777,6 +788,18 @@ class _WaveKaraokeLyricLineState extends State<WaveKaraokeLyricLine> {
   }
 }
 
+/// Joined scripts (Devanagari, …) overlap neighbouring glyphs on purpose so
+/// the headline bar reads as one stroke. Translucent colour is applied per
+/// glyph, so those overlaps blend twice and show as bright dots. Draw the
+/// run opaque and fade it as a group instead.
+({TextStyle style, double alpha}) _groupFade(TextStyle s, String text) {
+  final c = s.color;
+  if (c == null || c.a >= 0.999 || !isJoinedScript(text)) {
+    return (style: s, alpha: 1.0);
+  }
+  return (style: s.copyWith(color: c.withValues(alpha: 1.0)), alpha: c.a);
+}
+
 /// Progressive fill / wipe for an individual syllable with soft anti-aliased edge.
 class _KaraokeSyllableWidget extends StatelessWidget {
   final String text;
@@ -799,7 +822,11 @@ class _KaraokeSyllableWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     if (text.isEmpty) return const SizedBox.shrink();
     if (progress <= 0.0) {
-      return Text(text, style: idleStyle);
+      final fade = _groupFade(idleStyle, text);
+      final label = Text(text, style: fade.style);
+      return fade.alpha < 1.0
+          ? Opacity(opacity: fade.alpha, child: label)
+          : label;
     }
     if (progress >= 1.0) {
       return Text(text, style: activeStyle);
@@ -811,6 +838,39 @@ class _KaraokeSyllableWidget extends StatelessWidget {
     const feather = 0.035;
     final stop1 = (progress - feather).clamp(0.0, 1.0);
     final stop2 = (progress + feather).clamp(0.0, 1.0);
+
+    // Joined scripts paint the unsung tail as one opaque run and fade it
+    // as a group; the active portion is masked on top. Per-glyph alpha
+    // would double-composite where those glyphs overlap (bright dots).
+    if (isJoinedScript(text)) {
+      final idleFade = _groupFade(idleStyle, text);
+      final idle = Text(text, style: idleFade.style);
+      return Stack(
+        children: [
+          if (idleFade.alpha < 1.0)
+            Opacity(opacity: idleFade.alpha, child: idle)
+          else
+            idle,
+          ShaderMask(
+            blendMode: BlendMode.srcIn,
+            shaderCallback: (bounds) {
+              return LinearGradient(
+                begin: isRtl ? Alignment.centerRight : Alignment.centerLeft,
+                end: isRtl ? Alignment.centerLeft : Alignment.centerRight,
+                colors: [
+                  activeColor,
+                  activeColor,
+                  const Color(0x00000000),
+                  const Color(0x00000000),
+                ],
+                stops: [0.0, stop1, stop2, 1.0],
+              ).createShader(bounds);
+            },
+            child: Text(text, style: activeStyle),
+          ),
+        ],
+      );
+    }
 
     return ShaderMask(
       blendMode: BlendMode.srcIn,

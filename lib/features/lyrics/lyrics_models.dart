@@ -371,6 +371,21 @@ bool isRtlText(String text) {
   return false;
 }
 
+/// True for scripts whose letters join or stack (Devanagari and the other
+/// Indic scripts, Thai, Lao, Khmer, Myanmar): negative letter-spacing makes
+/// adjacent glyphs overlap there.
+bool isJoinedScript(String text) {
+  for (final rune in text.runes) {
+    if ((rune >= 0x0900 && rune <= 0x0DFF) ||
+        (rune >= 0x0E00 && rune <= 0x0EFF) ||
+        (rune >= 0x1000 && rune <= 0x109F) ||
+        (rune >= 0x1780 && rune <= 0x17FF)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Parse standard LRC into [LyricLine]s with line durations and
 /// word-by-word syllable interpolation.
 ///
