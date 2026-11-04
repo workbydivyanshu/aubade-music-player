@@ -1363,11 +1363,15 @@ class _AppleLineLyricsViewState extends State<_AppleLineLyricsView> {
     );
 
     final list = untimed
-        ? ListView.builder(
-            physics: const ClampingScrollPhysics(),
-            padding: padding,
-            itemCount: widget.result.lines.length,
-            itemBuilder: (context, i) => lineAt(i),
+        ? ScrollConfiguration(
+            behavior: ScrollConfiguration.of(context)
+                .copyWith(scrollbars: false),
+            child: ListView.builder(
+              physics: const ClampingScrollPhysics(),
+              padding: padding,
+              itemCount: widget.result.lines.length,
+              itemBuilder: (context, i) => lineAt(i),
+            ),
           )
         : NotificationListener<ScrollNotification>(
             onNotification: (n) {
@@ -1376,14 +1380,23 @@ class _AppleLineLyricsViewState extends State<_AppleLineLyricsView> {
               }
               return false;
             },
-            child: ScrollablePositionedList.builder(
-              itemScrollController: _scroll,
-              initialScrollIndex: active > 0 ? active : 0,
-              initialAlignment: lyricFollowAlignment(active > 0 ? active : 0,
-                  compact: widget.compact),
-              itemCount: widget.result.lines.length,
-              padding: padding,
-              itemBuilder: (context, i) => lineAt(i),
+            // The app-wide scrollbar flashes on every programmatic
+            // follow-scroll; lyrics are tap/wheel/drag driven, so it
+            // carries no information here.
+            child: ScrollConfiguration(
+              behavior: ScrollConfiguration.of(context)
+                  .copyWith(scrollbars: false),
+              child: ScrollablePositionedList.builder(
+                itemScrollController: _scroll,
+                initialScrollIndex: active > 0 ? active : 0,
+                initialAlignment: lyricFollowAlignment(
+                  active > 0 ? active : 0,
+                  compact: widget.compact,
+                ),
+                itemCount: widget.result.lines.length,
+                padding: padding,
+                itemBuilder: (context, i) => lineAt(i),
+              ),
             ),
           );
 
