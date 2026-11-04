@@ -298,13 +298,31 @@ class LyricsRepository {
   }
 
   /// Loads a local `.lrc` sidecar for [filePath] when one exists.
+  ///
+  /// Both sidecar name forms are recognized and tried in a
+  /// deterministic order: the canonical extension-stripped
+  /// `<track>.lrc` (`saveLocalLrc` shape) first, then the
+  /// DownloadManager's appended `<track.ext>.lrc`. A canonical file
+  /// that is unreadable or yields no lyrics falls through to the
+  /// appended form; when both parse the canonical wins.
   LyricsResult? _loadLocalLrcSidecar(String filePath) {
     if (filePath.isEmpty) return null;
-    final sidecar = '${p.withoutExtension(filePath)}.lrc';
-    final f = File(sidecar);
-    if (!f.existsSync()) return null;
+    final canonical = '${p.withoutExtension(filePath)}.lrc';
+    final appended = '$filePath.lrc';
+    final candidates = [
+      if (File(canonical).existsSync()) canonical,
+      if (File(appended).existsSync()) appended,
+    ];
+    for (final candidate in candidates) {
+      final result = _parseLocalLrcSidecar(candidate);
+      if (result != null) return result;
+    }
+    return null;
+  }
+
+  LyricsResult? _parseLocalLrcSidecar(String sidecar) {
     try {
-      final lines = parseLrc(f.readAsStringSync());
+      final lines = parseLrc(File(sidecar).readAsStringSync());
       if (lines.isEmpty) return null;
       final result = LyricsResult(
         lines: lines,
@@ -318,7 +336,7 @@ class LyricsRepository {
         return result;
       }
     } catch (_) {
-      // Unreadable/invalid sidecar: fall through to the providers.
+      // Unreadable/invalid sidecar: try the next candidate.
       return null;
     }
   }
@@ -339,8 +357,10 @@ class LyricsRepository {
     final preferred = LyricsProviderId.fromId(preferredProviderId);
     final excludes = excludeProviderIds.toSet();
     final sortedExcludes = excludes.toList()..sort();
+    // filePath is part of the key: adjacent sidecars are per-file, so
+    // two copies of the same track must not share a cached result.
     final key =
-        '${_key(title, artist, album)}|${durationSeconds ?? 0}|$wordByWord|${preferred.id}|${sortedExcludes.join(',')}';
+        '${_key(title, artist, album)}|${durationSeconds ?? 0}|$wordByWord|${preferred.id}|${sortedExcludes.join(',')}|${filePath ?? ''}';
     if (!forceRefresh) {
       final cached = _lookup(key);
       // Empty results are never stored (see below), so any cache hit
@@ -352,8 +372,25 @@ class LyricsRepository {
       }
     }
 
-    // Local .lrc sidecar: a hand-curated local file wins over any
-    // remote source, and no network is touched at all when it parses.
+    // Auto follows the v1.0.9 priority order, where the local sidecar
+    // is the LAST resort behind every online tier.
+    if (preferred == LyricsProviderId.auto) {
+      return _getLyricsAuto(
+        key: key,
+        title: title,
+        artist: artist,
+        album: album,
+        durationSeconds: durationSeconds,
+        wordByWord: wordByWord,
+        videoId: videoId,
+        excludes: excludes,
+        filePath: filePath,
+        onPartialResult: onPartialResult,
+      );
+    }
+
+    // Manual pick: local .lrc sidecar wins over any remote source, and
+    // no network is touched at all when it parses (unchanged behavior).
     if (filePath != null && filePath.isNotEmpty) {
       final sidecar = _loadLocalLrcSidecar(filePath);
       if (sidecar != null) {
@@ -562,6 +599,185 @@ class LyricsRepository {
         return display(lrc);
       }
     }
+    // Nothing usable: return empty WITHOUT caching it, so a later
+    // retry (or the next rebuild) actually refetches instead of
+    // replaying this miss.
+    return const LyricsResult.empty();
+  }
+
+  /// Auto resolution, ordered by the v1.0.9 priority rules:
+  ///
+  /// 1. any acceptable Apple Music result (top tier regardless of the
+  ///    sync quality Apple served),
+  /// 2. other word-synced lyrics,
+  /// 3. other line-synced lyrics,
+  /// 4. other plain lyrics,
+  /// 5. the adjacent local `.lrc` sidecar.
+  ///
+  /// Eligible online providers race concurrently under the shared race
+  /// deadline: `simp_music` only with a `videoId`, exclusions honored.
+  /// A non-Apple result is provisional — streamed via
+  /// `onPartialResult` while a better tier is still possible — and
+  /// never finalizes while an eligible Apple attempt is pending (the
+  /// race loop only completes once every attempt has settled, or the
+  /// deadline expires). An excluded / empty / implausible Apple result
+  /// does not gate the fallback tiers. Among collected candidates the
+  /// tier order decides; ties use the existing same-tier
+  /// `isBetterCandidate` comparator. Only when every remote source
+  /// misses is the sidecar consulted, so manual picks keep their older
+  /// sidecar-first path (`getLyrics`).
+  Future<LyricsResult> _getLyricsAuto({
+    required String key,
+    required String title,
+    required String artist,
+    String album = '',
+    int? durationSeconds,
+    bool wordByWord = true,
+    String? videoId,
+    Set<String> excludes = const {},
+    String? filePath,
+    void Function(LyricsResult partial)? onPartialResult,
+  }) async {
+    final wantsAlt = lyricsIsAlternateRecording(title, album: album);
+
+    LyricsResult? normalize(LyricsResult? result) {
+      if (result == null || result.isEmpty) return null;
+      try {
+        return normalizeKaraokeTimings(result);
+      } catch (_) {
+        // Never drop lyrics over a normalization edge: fall back to
+        // the un-normalized result.
+        return result;
+      }
+    }
+
+    bool plausible(LyricsResult result) =>
+        result.isInstrumental ||
+        lyricsPlausibleDuration(result.lines, durationSeconds);
+
+    bool acceptable(LyricsResult result) =>
+        plausible(result) && !(result.isInstrumental && !wantsAlt);
+
+    LyricsResult display(LyricsResult result) =>
+        lyricsForDisplayMode(result, wordByWord: wordByWord);
+
+    Future<LyricsResult?> attempt(String providerId) {
+      if (excludes.contains(providerId)) return Future.value(null);
+      return fetchFromProvider(
+            providerId,
+            title: title,
+            artist: artist,
+            album: album,
+            durationSeconds: durationSeconds,
+            videoId: videoId,
+          )
+          .timeout(const Duration(seconds: 10), onTimeout: () => null)
+          .then<LyricsResult?>(
+            (result) => normalize(result),
+            onError: (_) => null,
+          );
+    }
+
+    // Tiers for non-Apple candidates: 1: other word-synced ·
+    // 2: other line-synced · 3: plain. Apple itself (tier 0) is
+    // classified by the provider id in the race events — never by an
+    // arbitrary source label — so only the actual Apple provider gets
+    // top-tier treatment.
+    int tierOf(LyricsResult result) {
+      if (result.isWordSynced) return 1;
+      if (result.isSynced) return 2;
+      return 3;
+    }
+
+    final pending = <Future<({String id, LyricsResult? result})>>[
+      for (final id in const [
+        'lrc_red',
+        'apple_music',
+        'better_lyrics',
+        'kugou',
+        'simp_music',
+        'lrclib',
+        'musixmatch',
+      ])
+        if (id != 'simp_music' || (videoId?.isNotEmpty ?? false))
+          attempt(id).then((result) => (id: id, result: result)),
+    ];
+
+    LyricsResult? appleFinal;
+    LyricsResult? best;
+
+    Future<void> runRace() async {
+      await for (final e in Stream.fromFutures(pending)) {
+        final result = e.result;
+        if (result == null || result.isEmpty || !acceptable(result)) {
+          // Apple that returns nothing acceptable does not gate the
+          // fallback tiers; the race simply keeps collecting.
+          continue;
+        }
+        if (e.id == 'apple_music') {
+          // Apple is top tier regardless of sync quality: finalize
+          // immediately, no lower-tier result can outrank it.
+          appleFinal = result;
+          return;
+        }
+        bool displaces;
+        final current = best;
+        if (current == null) {
+          displaces = true;
+        } else {
+          // Tier order first, and the richness comparator only
+          // adjudicates candidates in the SAME tier — it must never
+          // promote a lower-tier plain cut over a collected
+          // line-synced one.
+          final newTier = tierOf(result);
+          final curTier = tierOf(current);
+          displaces =
+              newTier < curTier ||
+              (newTier == curTier &&
+                  isBetterCandidate(result, current, queryTitle: title));
+        }
+        if (displaces) {
+          best = result;
+          onPartialResult?.call(display(result));
+        }
+      }
+    }
+
+    try {
+      await runRace().timeout(raceTotal);
+    } on TimeoutException {
+      // Collected partials still count; final selection below obeys
+      // the tier order among the collected candidates (Apple pending
+      // past the deadline no longer gates the fallback tiers).
+    }
+    final appleWinner = appleFinal;
+    if (appleWinner != null) {
+      _store(key, appleWinner);
+      return display(appleWinner);
+    }
+
+    // Otherwise the best collected candidate finalizes — the tier
+    // order already moved better candidates into [best] as they
+    // arrived. `musixmatch` is part of the raced candidate set now, so
+    // no post-race fallback attempt is needed (and none must exist, to
+    // keep every candidate under one tier ranking).
+    final settled = best;
+    if (settled != null) {
+      _store(key, settled);
+      return display(settled);
+    }
+
+    // Local `.lrc` sidecar is the Auto last resort: only after every
+    // eligible remote source misses (both name forms are honored).
+    if (filePath != null && filePath.isNotEmpty) {
+      final sidecar = _loadLocalLrcSidecar(filePath);
+      if (sidecar != null) {
+        _store(key, sidecar);
+        onPartialResult?.call(sidecar);
+        return lyricsForDisplayMode(sidecar, wordByWord: wordByWord);
+      }
+    }
+
     // Nothing usable: return empty WITHOUT caching it, so a later
     // retry (or the next rebuild) actually refetches instead of
     // replaying this miss.

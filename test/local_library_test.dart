@@ -135,7 +135,8 @@ void main() {
       tempDir.deleteSync(recursive: true);
     });
 
-    test('getLyrics loads a sidecar .lrc and never hits providers', () async {
+    test('getLyrics falls back to a sidecar .lrc under Auto after the '
+        'providers miss', () async {
       File('${tempDir.path}/Song.lrc').writeAsStringSync(
         'Other tag line\n'
         '[00:10.00] Hello world\n'
@@ -151,8 +152,56 @@ void main() {
       expect(result.plainLyrics, 'Hello world\nSecond line');
       expect(result.lines.first.timeMs, 10_000);
       final noNet = repo as _NoNetworkLyricsRepository;
-      expect(noNet.providersHit, isFalse,
-          reason: 'valid local .lrc must short-circuit the network');
+      expect(
+        noNet.providersHit,
+        isTrue,
+        reason: 'Auto tries every online tier before the sidecar',
+      );
+    });
+
+    test('a manual provider pick still short-circuits on the sidecar '
+        '.lrc', () async {
+      File('${tempDir.path}/Song.lrc')
+          .writeAsStringSync('[00:10.00] Hello world\n');
+      final result = await repo.getLyrics(
+        title: 'Song',
+        artist: 'Artist',
+        filePath: '${tempDir.path}/Song.mp3',
+        preferredProviderId: 'lrclib',
+      );
+      expect(result.source, 'Local (.lrc)');
+      final noNet = repo as _NoNetworkLyricsRepository;
+      expect(
+        noNet.providersHit,
+        isFalse,
+        reason: 'manual picks keep the sidecar-first precedence',
+      );
+    });
+
+    test('the appended <track.ext>.lrc form loads too, canonical '
+        '<track>.lrc preferred when both exist', () async {
+      // Only the appended form (DownloadManager's `file.flac.lrc`).
+      File('${tempDir.path}/Track.flac.lrc')
+          .writeAsStringSync('[00:06.00] Appended form\n');
+      final appended = await repo.getLyrics(
+        title: 'Track',
+        artist: 'Artist',
+        filePath: '${tempDir.path}/Track.flac',
+        forceRefresh: true,
+      );
+      expect(appended.source, 'Local (.lrc)');
+      expect(appended.plainLyrics, 'Appended form');
+
+      // Both forms: the extension-stripped canonical sidecar wins.
+      File('${tempDir.path}/Track.lrc')
+          .writeAsStringSync('[00:10.00] Canonical form\n');
+      final both = await repo.getLyrics(
+        title: 'Track',
+        artist: 'Artist',
+        filePath: '${tempDir.path}/Track.flac',
+        forceRefresh: true,
+      );
+      expect(both.plainLyrics, 'Canonical form');
     });
 
     test('missing sidecar falls through without error', () async {

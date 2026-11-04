@@ -74,33 +74,54 @@ class _StubRepo extends LyricsRepository {
 }
 
 void main() {
-  test('word beats faster line; explicit preferred line outranks race line',
-      () async {
-    // Preferred better (line, slow) vs apple line (fast): preferred wins.
-    final repo = _StubRepo({
-      'better_lyrics': _line('BetterLyrics (Line-Sync)'),
-      'apple_music': _line('Apple Music (Line-Sync)'),
-    }, delays: {
-      'better_lyrics': const Duration(milliseconds: 100),
-    });
-    final picked = await repo.getLyrics(
-      title: 'T',
-      artist: 'A',
-      preferredProviderId: 'better_lyrics',
-    );
-    expect(picked.source, contains('BetterLyrics'));
+  test(
+    'auto follows Apple priority; explicit preferred line outranks race',
+    () async {
+      // Preferred better (line, slow) vs apple line (fast): preferred wins.
+      final repo = _StubRepo(
+        {
+          'better_lyrics': _line('BetterLyrics (Line-Sync)'),
+          'apple_music': _line('Apple Music (Line-Sync)'),
+        },
+        delays: {'better_lyrics': const Duration(milliseconds: 100)},
+      );
+      final picked = await repo.getLyrics(
+        title: 'T',
+        artist: 'A',
+        preferredProviderId: 'better_lyrics',
+      );
+      expect(picked.source, contains('BetterLyrics'));
 
-    // Kugou word (slow) beats apple line (fast) in Auto.
-    final auto = _StubRepo({
-      'kugou': _word('Kugou KRC (Word-Sync)'),
-      'apple_music': _line('Apple Music (Line-Sync)'),
-    }, delays: {
-      'kugou': const Duration(milliseconds: 300),
-    });
-    final word = await auto.getLyrics(title: 'T', artist: 'A');
-    expect(word.isWordSynced, isTrue);
-    expect(word.source, contains('Kugou'));
-  });
+      // Auto v1.0.9: any acceptable Apple result outranks the faster
+      // non-Apple word hit; with Apple excluded the word hit wins over
+      // the line-synced rest.
+      final auto = _StubRepo(
+        {
+          'kugou': _word('Kugou KRC (Word-Sync)'),
+          'apple_music': _line('Apple Music (Line-Sync)'),
+        },
+        delays: {'kugou': const Duration(milliseconds: 300)},
+      );
+      final apple = await auto.getLyrics(title: 'T', artist: 'A');
+      expect(apple.source, contains('Apple'));
+      expect(apple.isWordSynced, isFalse);
+
+      final noApple = _StubRepo(
+        {
+          'kugou': _word('Kugou KRC (Word-Sync)'),
+          'apple_music': _line('Apple Music (Line-Sync)'),
+        },
+        delays: {'kugou': const Duration(milliseconds: 300)},
+      );
+      final word = await noApple.getLyrics(
+        title: 'T',
+        artist: 'A',
+        excludeProviderIds: const {'apple_music'},
+      );
+      expect(word.isWordSynced, isTrue);
+      expect(word.source, contains('Kugou'));
+    },
+  );
 
   test('excluded provider is never attempted; best of rest wins', () async {
     final repo = _StubRepo({

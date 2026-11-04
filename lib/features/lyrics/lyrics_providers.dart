@@ -19,7 +19,7 @@ enum LyricsProviderId {
   auto(
     'auto',
     'Auto',
-    'Fastest word-sync wins, LRCLIB fallback',
+    'Apple Music first, then other synced lyrics',
   ),
   lrcRed(
     'lrc_red',

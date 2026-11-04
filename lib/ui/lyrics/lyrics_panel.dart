@@ -48,6 +48,7 @@ final waveLyricsProvider = StreamProvider.autoDispose
     videoId: current.videoId.isNotEmpty ? current.videoId : null,
     preferredProviderId: override ?? prefs.lyricsProviderId,
     excludeProviderIds: excludes,
+    filePath: current.playbackUrl,
     onPartialResult: guard.emit,
   ).then(guard.emit, onError: guard.fail).whenComplete(guard.finish));
   return results.stream;
