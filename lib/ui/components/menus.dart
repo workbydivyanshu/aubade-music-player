@@ -212,14 +212,26 @@ List<WaveMenuEntry> waveTrackMenuItems({
     WaveMenuAction(
       leading: const Icon(FluentIcons.info, size: 15),
       label: 'Properties',
-      onPressed: () => showWaveTrackProperties(
-        ref.context,
-        title: title,
-        artist: artist,
-        artworkUrl: artworkUrl,
-        playbackUrl: playbackUrl,
-        durationSeconds: track.durationSeconds,
-      ),
+      onPressed: () {
+        final currentSnap = ref.read(playbackServiceProvider);
+        final isCurrent = currentSnap.current?.queueKey == track.queueKey;
+        final qualityBadge =
+            isCurrent ? currentSnap.stream?.qualityBadge : null;
+        showWaveTrackProperties(
+          ref.context,
+          title: title,
+          artist: artist,
+          album: track.album.isNotEmpty ? track.album : album,
+          artworkUrl: artworkUrl,
+          playbackUrl: playbackUrl,
+          durationSeconds: track.durationSeconds,
+          queueKey: track.queueKey,
+          currentQueueKey: currentSnap.current?.queueKey,
+          quality: (qualityBadge != null && qualityBadge.isNotEmpty)
+              ? qualityBadge
+              : null,
+        );
+      },
     ),
   );
   items.add(const WaveMenuSeparator());
@@ -270,42 +282,46 @@ List<WaveMenuEntry> waveTrackMenuItems({
 ///
 /// A track with a live local path opens the full Track Inspector — an
 /// Apple-style key/value sheet over FILE / AUDIO / TAGS sections read
-/// straight from disk. Online or vanished-file tracks keep the minimal
-/// 2-line identity dialog.
+/// straight from disk.
+///
+/// Remote, missing, or malformed paths show only Title, Artist, Album, and
+/// Duration from track metadata; unknown values use quiet `—`. Quality is
+/// allowed only when it belongs to the same currently playing `queueKey` and is known.
+/// Source URLs, request headers, cookies, and IDs are never shown.
 Future<void> showWaveTrackProperties(
   BuildContext context, {
   required String title,
   required String artist,
+  String album = '',
   String artworkUrl = '',
   String playbackUrl = '',
   int durationSeconds = 0,
+  String? queueKey,
+  String? currentQueueKey,
+  String? quality,
 }) {
-  final isLocalFile =
-      playbackUrl.isNotEmpty && File(playbackUrl).existsSync();
+  bool isLocalFile = false;
+  if (playbackUrl.isNotEmpty) {
+    try {
+      isLocalFile = File(playbackUrl).existsSync();
+    } catch (_) {
+      isLocalFile = false;
+    }
+  }
   if (!isLocalFile) {
     return showDialog(
       context: context,
-      builder: (context) => ContentDialog(
-        title: const Text('Properties'),
-        constraints: const BoxConstraints(maxWidth: 440),
-        content: SizedBox(
-          width: double.infinity,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: WaveType.trackTitle),
-              const SizedBox(height: 4),
-              Text(artist, style: WaveType.body),
-            ],
-          ),
-        ),
-        actions: [
-          WaveFilledButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Close'),
-          ),
-        ],
+      builder: (context) => _WaveRemoteTrackProperties(
+        title: title,
+        artist: artist,
+        album: album,
+        durationSeconds: durationSeconds,
+        showQuality: queueKey != null &&
+            currentQueueKey != null &&
+            queueKey == currentQueueKey &&
+            quality != null &&
+            quality.isNotEmpty,
+        quality: quality ?? '',
       ),
     );
   }
@@ -318,6 +334,98 @@ Future<void> showWaveTrackProperties(
       durationSeconds: durationSeconds,
     ),
   );
+}
+
+class _WaveRemoteTrackProperties extends StatelessWidget {
+  final String title;
+  final String artist;
+  final String album;
+  final int durationSeconds;
+  final bool showQuality;
+  final String quality;
+
+  const _WaveRemoteTrackProperties({
+    required this.title,
+    required this.artist,
+    this.album = '',
+    this.durationSeconds = 0,
+    this.showQuality = false,
+    this.quality = '',
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = waveTextPrimary(context);
+    final secondary = waveTextSecondary(context);
+    final tertiary = waveTextTertiary(context);
+    final keyStyle = WaveType.label.copyWith(color: secondary);
+
+    Widget kvRow(
+      String label,
+      String value, {
+      bool numeric = false,
+    }) {
+      final style = WaveType.body.copyWith(
+        color: value == _missingValue ? tertiary : primary,
+        fontFeatures: numeric ? const [FontFeature.tabularFigures()] : null,
+      );
+      return Padding(
+        padding: const EdgeInsetsDirectional.only(bottom: WaveSpacing.x8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 80,
+              child: Text(label, style: keyStyle),
+            ),
+            const SizedBox(width: WaveSpacing.x8),
+            Expanded(
+              child: Text(
+                value,
+                style: style,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final displayTitle = title.trim().isNotEmpty ? title.trim() : _missingValue;
+    final displayArtist =
+        artist.trim().isNotEmpty ? artist.trim() : _missingValue;
+    final displayAlbum = album.trim().isNotEmpty ? album.trim() : _missingValue;
+    final displayDuration = durationSeconds > 0
+        ? _formatTrackLength(durationSeconds)
+        : _missingValue;
+
+    return ContentDialog(
+      title: const Text('Properties'),
+      constraints: const BoxConstraints(maxWidth: 440),
+      content: SizedBox(
+        width: double.infinity,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            kvRow('Title', displayTitle),
+            kvRow('Artist', displayArtist),
+            kvRow('Album', displayAlbum),
+            kvRow('Duration', displayDuration, numeric: true),
+            if (showQuality && quality.isNotEmpty)
+              kvRow('Quality', quality),
+          ],
+        ),
+      ),
+      actions: [
+        WaveFilledButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+      ],
+    );
+  }
 }
 
 const String _missingValue = '—';

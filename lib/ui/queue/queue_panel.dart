@@ -15,10 +15,17 @@ import '../theme/tokens.dart';
 
 /// Contextual queue — slides from right, 360px, disappears fully.
 ///
-/// Header: Queue 18px + UP NEXT count + Clear. NOW PLAYING 44px accent row.
+/// Header: Queue 18px + UP NEXT count + Lock toggle + Clear. NOW PLAYING 44px accent row.
 /// Reorderable 48px rows: drag handle visible on hover but always
 /// accessible (low-opacity idle), hover X remove, right-click menu
 /// (Play next, Go to album/artist, Download, Add to playlist, Remove).
+
+/// Session-only lock state for the playback queue.
+///
+/// When locked, structural edits (Clear up next, row removal, drag reorder)
+/// are blocked, while playback, seeking, and appending new tracks continue.
+final queueLockedProvider = StateProvider<bool>((ref) => false);
+
 class WaveQueuePanel extends ConsumerWidget {
   final VoidCallback? onClose;
   final bool embedded;
@@ -33,6 +40,7 @@ class WaveQueuePanel extends ConsumerWidget {
     final index = ref.watch(
       playbackServiceProvider.select((s) => s.currentIndex),
     );
+    final isLocked = ref.watch(queueLockedProvider);
     final notifier = ref.read(playbackServiceProvider.notifier);
     if (queue.isEmpty) {
       return _Shell(
@@ -94,12 +102,21 @@ class WaveQueuePanel extends ConsumerWidget {
                   ),
                 ),
                 const Spacer(),
+                _QueueLockGlyph(
+                  locked: isLocked,
+                  onTap: () {
+                    ref.read(queueLockedProvider.notifier).state = !isLocked;
+                  },
+                ),
+                const SizedBox(width: 8),
                 LWTooltip(
-                  message: upcoming.isEmpty
-                      ? 'Nothing to clear'
-                      : 'Clear up next',
+                  message: isLocked
+                      ? 'Queue is locked'
+                      : (upcoming.isEmpty
+                          ? 'Nothing to clear'
+                          : 'Clear up next'),
                   child: WaveLink(
-                    onPressed: upcoming.isEmpty
+                    onPressed: isLocked || upcoming.isEmpty
                         ? null
                         : notifier.clearUpcoming,
                     child: Text(
@@ -131,6 +148,7 @@ class WaveQueuePanel extends ConsumerWidget {
                     // moveInQueue expects classic onReorder coordinates,
                     // so shift back up when moving down.
                     onReorderItem: (oldI, newI) {
+                      if (isLocked) return;
                       final r = newI > oldI ? newI + 1 : newI;
                       final oldQueue = index + 1 + oldI;
                       final newQueue = index + 1 + r;
@@ -144,6 +162,7 @@ class WaveQueuePanel extends ConsumerWidget {
                         track: t,
                         queueIndex: queueIndex,
                         dragIndex: i,
+                        isLocked: isLocked,
                       );
                     },
                   ),
@@ -353,11 +372,13 @@ class _QueueRow extends ConsumerStatefulWidget {
   final PlayableTrack track;
   final int queueIndex;
   final int dragIndex;
+  final bool isLocked;
   const _QueueRow({
     super.key,
     required this.track,
     required this.queueIndex,
     required this.dragIndex,
+    this.isLocked = false,
   });
   @override
   ConsumerState<_QueueRow> createState() => _QueueRowState();
@@ -419,7 +440,9 @@ class _QueueRowState extends ConsumerState<_QueueRow> {
       WaveMenuAction(
         leading: const Icon(WaveIcons.delete, size: 15),
         label: 'Remove',
-        onPressed: () => notifier.removeAt(widget.queueIndex),
+        onPressed: widget.isLocked
+            ? null
+            : () => notifier.removeAt(widget.queueIndex),
       ),
     ];
   }
@@ -446,33 +469,48 @@ class _QueueRowState extends ConsumerState<_QueueRow> {
           child: Row(
             children: [
               // Drag handle: low-opacity idle (still visible/keyboard
-              // reachable) → full opacity on hover.
-              LWTooltip(
-                message: 'Drag to reorder',
-                child: ReorderableDragStartListener(
-                  index: widget.dragIndex,
-                  child: MouseRegion(
-                    cursor: SystemMouseCursors.move,
-                    child: Container(
-                      width: 28,
-                      height: 36,
-                      color: Colors.transparent,
-                      child: Icon(
-                        FluentIcons.gripper_bar_vertical,
-                        size: 15,
-                        color: _hover
+              // reachable) → full opacity on hover; muted/non-draggable
+              // when queue is locked.
+              () {
+                final handleWidget = Container(
+                  width: 28,
+                  height: 36,
+                  color: Colors.transparent,
+                  child: Icon(
+                    FluentIcons.gripper_bar_vertical,
+                    size: 15,
+                    color: widget.isLocked
+                        ? (dark
+                            ? WaveColors.textTertiary.withValues(alpha: 0.25)
+                            : WaveColors.lightTextTertiary
+                                .withValues(alpha: 0.25))
+                        : (_hover
                             ? (dark
-                                  ? WaveColors.textSecondary
-                                  : WaveColors.lightTextSecondary)
+                                ? WaveColors.textSecondary
+                                : WaveColors.lightTextSecondary)
                             : (dark
-                                      ? WaveColors.textTertiary
-                                      : WaveColors.lightTextTertiary)
-                                  .withValues(alpha: 0.45),
-                      ),
+                                ? WaveColors.textTertiary
+                                : WaveColors.lightTextTertiary)
+                                .withValues(alpha: 0.45)),
+                  ),
+                );
+                if (widget.isLocked) {
+                  return MouseRegion(
+                    cursor: SystemMouseCursors.basic,
+                    child: handleWidget,
+                  );
+                }
+                return LWTooltip(
+                  message: 'Drag to reorder',
+                  child: ReorderableDragStartListener(
+                    index: widget.dragIndex,
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.move,
+                      child: handleWidget,
                     ),
                   ),
-                ),
-              ),
+                );
+              }(),
               const SizedBox(width: 4),
               WaveArtwork(
                 url: widget.track.artworkUrl,
@@ -500,7 +538,7 @@ class _QueueRowState extends ConsumerState<_QueueRow> {
                   ],
                 ),
               ),
-              if (_hover)
+              if (_hover && !widget.isLocked)
                 LWTooltip(
                   message: 'Remove',
                   child: GestureDetector(
@@ -522,6 +560,62 @@ class _QueueRowState extends ConsumerState<_QueueRow> {
     return WaveContextMenu(
       items: () => _menuItems(ref),
       child: row,
+    );
+  }
+}
+
+class _QueueLockGlyph extends StatefulWidget {
+  final bool locked;
+  final VoidCallback onTap;
+  const _QueueLockGlyph({required this.locked, required this.onTap});
+
+  @override
+  State<_QueueLockGlyph> createState() => _QueueLockGlyphState();
+}
+
+class _QueueLockGlyphState extends State<_QueueLockGlyph> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = waveIsDark(context);
+    final tooltip = widget.locked ? 'Unlock queue' : 'Lock queue';
+    final icon = widget.locked ? FluentIcons.lock_solid : FluentIcons.unlock;
+    final activeColor = waveAccent(context);
+    final idleColor =
+        dark ? WaveColors.textTertiary : WaveColors.lightTextTertiary;
+    final hoverColor =
+        dark ? WaveColors.textPrimary : WaveColors.lightTextPrimary;
+
+    return LWTooltip(
+      message: tooltip,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            width: 24,
+            height: 24,
+            decoration: BoxDecoration(
+              color: _hover
+                  ? (dark ? const Color(0xFFFFFFFF) : const Color(0xFF000000))
+                      .withValues(alpha: WaveState.hoverAlpha)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(WaveRadius.controls),
+            ),
+            child: Icon(
+              icon,
+              size: 13,
+              color: widget.locked
+                  ? activeColor
+                  : (_hover ? hoverColor : idleColor),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
