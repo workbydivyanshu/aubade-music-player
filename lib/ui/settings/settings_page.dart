@@ -31,6 +31,7 @@ import '../../features/presence/discord_presence_service.dart';
 import '../../features/updater/update_models.dart';
 import '../../features/updater/update_service.dart';
 import '../components/update_dialog.dart';
+import 'settings_search.dart';
 
 /// Installed app metadata, used by About to show the real runtime version.
 final packageInfoProvider =
@@ -70,6 +71,14 @@ class WaveSettingsPage extends ConsumerStatefulWidget {
 
 class _WaveSettingsPageState extends ConsumerState<WaveSettingsPage> {
   late String _section;
+  final _searchController = TextEditingController();
+  Timer? _highlightTimer;
+
+  /// One-shot scroll target for the current pending settings lookup.
+  String? _jumpId;
+
+  /// Accent-highlighted group while a lookup flash is visible (~2.2s).
+  String? _highlightId;
 
   @override
   void initState() {
@@ -80,6 +89,84 @@ class _WaveSettingsPageState extends ConsumerState<WaveSettingsPage> {
         canon != null && _waveSettingsSections.any((s) => s.$1 == canon)
             ? canon
             : 'library';
+  }
+
+  @override
+  void dispose() {
+    _highlightTimer?.cancel();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  /// Result tapped in the rail search surface: switch the section,
+  /// keep the standing query (the user may keep browsing results),
+  /// then scroll to and flash the target group for 2.2s.
+  void _jumpTo(SettingsSearchEntry entry) {
+    setState(() {
+      _section = _canonSection(entry.section);
+      _highlightId = entry.groupId;
+      _jumpId = entry.groupId;
+    });
+    _highlightTimer?.cancel();
+    _highlightTimer = Timer(const Duration(milliseconds: 2200), () {
+      if (!mounted) return;
+      setState(() {
+        _highlightId = null;
+        _jumpId = null;
+      });
+    });
+  }
+
+  void _consumeJump() {
+    if (!mounted || _jumpId == null) return;
+    setState(() => _jumpId = null);
+  }
+
+  /// Rail search result rows. Jump taps keep the query so the surface
+  /// stays browsable (the standing query is part of the contract).
+  List<Widget> _searchResults(List<SettingsSearchEntry> results) {
+    if (results.isEmpty) {
+      return [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(0, 6, 0, 6),
+          child: Text(
+            'No matching settings',
+            style: WaveType.meta.copyWith(
+              color: waveTextSecondary(context),
+            ),
+          ),
+        ),
+      ];
+    }
+    return [
+      for (final entry in results)
+        ListTile.selectable(
+          selectionMode: ListTileSelectionMode.single,
+          leading: Icon(
+            _sectionIcon(entry.section),
+            size: 15,
+          ),
+          title: Text(entry.groupTitle),
+          subtitle: Text(entry.sectionLabel),
+          onPressed: () => _jumpTo(entry),
+        ),
+    ];
+  }
+
+  IconData _sectionIcon(String section) {
+    for (final s in _waveSettingsSections) {
+      if (s.$1 == section) return s.$3;
+    }
+    switch (section) {
+      case 'downloads':
+        return FluentIcons.download;
+      case 'sources':
+        return FluentIcons.cloud;
+      case 'about':
+        return FluentIcons.info;
+      default:
+        return FluentIcons.search;
+    }
   }
 
   Future<void> _update(Future<void> Function(Prefs) fn) async {
@@ -95,6 +182,11 @@ class _WaveSettingsPageState extends ConsumerState<WaveSettingsPage> {
         // Content-aware (rail-aware): LayoutBuilder sees real content
         // width, unlike MediaQuery window width (+200 rail error).
         final narrow = constraints.maxWidth < 900;
+        final query = _searchController.text.trim();
+        final results = query.isEmpty
+            ? const <SettingsSearchEntry>[]
+            : searchSettingsGroups(query);
+        final searching = query.isNotEmpty;
         if (narrow) {
           return ListView(
             physics: const ClampingScrollPhysics(),
@@ -106,23 +198,39 @@ class _WaveSettingsPageState extends ConsumerState<WaveSettingsPage> {
               ),
               const Text('Settings', style: WaveType.pageTitle),
               const SizedBox(height: 10),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  for (final s in _waveSettingsSections)
-                    ToggleButton(
-                      checked: _section == s.$1,
-                      onChanged: (_) => setState(() => _section = s.$1),
-                      child: Text(s.$2),
-                    ),
-                ],
+              _SearchField(
+                controller: _searchController,
+                onChanged: () => setState(() {}),
               ),
+              const SizedBox(height: 10),
+              if (searching)
+                ..._searchResults(results)
+              else
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final s in _waveSettingsSections)
+                      ToggleButton(
+                        checked: _section == s.$1,
+                        onChanged: (_) => setState(() => _section = s.$1),
+                        child: Text(s.$2),
+                      ),
+                  ],
+                ),
               const SizedBox(height: 12),
-              _SectionSwap(
-                child: RepaintBoundary(
-                  key: ValueKey(_section),
-                  child: _SectionBody(section: _section, onUpdate: _update),
+              SettingsJumpScope(
+                jumpId: _jumpId,
+                highlightId: _highlightId,
+                onJumpConsumed: _consumeJump,
+                child: _SectionSwap(
+                  child: RepaintBoundary(
+                    key: ValueKey(_section),
+                    child: _SectionBody(
+                      section: _section,
+                      onUpdate: _update,
+                    ),
+                  ),
                 ),
               ),
             ],
@@ -147,37 +255,50 @@ class _WaveSettingsPageState extends ConsumerState<WaveSettingsPage> {
                     ),
                     const Text('Settings', style: WaveType.pageTitle),
                     const SizedBox(height: 12),
-                    for (final s in _waveSettingsSections)
-                      ListTile.selectable(
-                        selected: _section == s.$1,
-                        selectionMode: ListTileSelectionMode.single,
-                        leading: Icon(s.$3, size: 15),
-                        title: Text(s.$2),
-                        onPressed: () => setState(() => _section = s.$1),
-                      ),
+                    _SearchField(
+                      controller: _searchController,
+                      onChanged: () => setState(() {}),
+                    ),
+                    const SizedBox(height: 8),
+                    if (searching)
+                      ..._searchResults(results)
+                    else
+                      for (final s in _waveSettingsSections)
+                        ListTile.selectable(
+                          selected: _section == s.$1,
+                          selectionMode: ListTileSelectionMode.single,
+                          leading: Icon(s.$3, size: 15),
+                          title: Text(s.$2),
+                          onPressed: () => setState(() => _section = s.$1),
+                        ),
                   ],
                 ),
               ),
             ),
             Container(width: 1, color: waveDivider(context)),
             Expanded(
-              child: ListView(
-                physics: const ClampingScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
-                children: [
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 640),
-                    child: _SectionSwap(
-                      child: RepaintBoundary(
-                        key: ValueKey(_section),
-                        child: _SectionBody(
-                          section: _section,
-                          onUpdate: _update,
+              child: SettingsJumpScope(
+                jumpId: _jumpId,
+                highlightId: _highlightId,
+                onJumpConsumed: _consumeJump,
+                child: ListView(
+                  physics: const ClampingScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+                  children: [
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 640),
+                      child: _SectionSwap(
+                        child: RepaintBoundary(
+                          key: ValueKey(_section),
+                          child: _SectionBody(
+                            section: _section,
+                            onUpdate: _update,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ],
@@ -264,20 +385,76 @@ class _SectionSwap extends StatelessWidget {
   }
 }
 
+/// Rail settings search box. Results appear live (no Enter needed);
+/// the query lives on the page controller, so a jump into the results
+/// never clears it — the X affordance is the only way to clear.
+class _SearchField extends StatelessWidget {
+  final TextEditingController controller;
+  final VoidCallback onChanged;
+  const _SearchField({required this.controller, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return TextBox(
+      controller: controller,
+      onChanged: (_) => onChanged(),
+      placeholder: 'Search settings',
+      suffix: ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) => controller.text.isEmpty
+            ? const SizedBox.shrink()
+            : WaveIconButton(
+                tooltip: 'Clear search',
+                icon: const Icon(FluentIcons.clear),
+                onPressed: () {
+                  controller.clear();
+                  onChanged();
+                },
+              ),
+      ),
+    );
+  }
+}
+
 class _Group extends StatelessWidget {
   final String title;
   final String subtitle;
   final Widget child;
+
+  /// Stable settings-search id. Null means this group is not in the
+  /// search catalog and can never be jumped to.
+  final String? id;
   const _Group({
     required this.title,
     required this.subtitle,
     required this.child,
+    this.id,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = FluentTheme.of(context);
-    final stroke = theme.resources.cardStrokeColorDefault;
+    final scope = SettingsJumpScope.maybeOf(context);
+    final highlighted = id != null &&
+        (scope?.highlightId == id || scope?.jumpId == id);
+    if (highlighted && scope?.jumpId == id) {
+      // One-shot: scroll this group into view after layout, then clear
+      // the jump flag. The highlight lives until the page drops it.
+      final element = context as Element;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (element.mounted) {
+          Scrollable.ensureVisible(
+            context,
+            duration: const Duration(milliseconds: 260),
+            alignment: 0.08,
+          );
+        }
+        scope?.onJumpConsumed();
+      });
+    }
+    final stroke = highlighted
+        ? waveAccent(context)
+        : theme.resources.cardStrokeColorDefault;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -336,6 +513,7 @@ class _Account extends ConsumerWidget {
     final signedIn = auth.username.isNotEmpty;
     final guest = auth.status == AuthStatus.guest || prefs.isGuest;
     return _Group(
+      id: 'lastfm-connection',
       title: 'Last.fm connection',
       subtitle: 'Scrobbling and discovery need a session',
       child: Column(
@@ -537,6 +715,7 @@ class _Audio extends ConsumerWidget {
       children: [
         const SizedBox(height: 8),
         _Group(
+          id: 'audio-output',
           title: 'Audio output',
           subtitle: Platform.isWindows
               ? 'WASAPI Exclusive bypasses the Windows mixer'
@@ -545,6 +724,7 @@ class _Audio extends ConsumerWidget {
         ),
         const SizedBox(height: 8),
         _Group(
+          id: 'loudness',
           title: 'Loudness & Dynamics',
           subtitle:
               'ReplayGain and volume normalization for the local library',
@@ -607,6 +787,7 @@ class _Audio extends ConsumerWidget {
         ),
         const SizedBox(height: 8),
         _Group(
+          id: 'resampling',
           title: 'Resampling & DAC',
           subtitle: 'Output sample-rate handling',
           child: Column(
@@ -663,6 +844,7 @@ class _Appearance extends ConsumerWidget {
     return Column(
       children: [
         _Group(
+          id: 'theme',
           title: 'Theme',
           subtitle: 'Midnight charcoal or pearl light',
           child: Column(
@@ -774,6 +956,7 @@ class _Appearance extends ConsumerWidget {
         ),
         const SizedBox(height: 8),
         _Group(
+          id: 'haze',
           title: 'Haze material',
           subtitle:
               'Automatic uses Haze L1–L3 as designed · Solid disables blur',
@@ -817,6 +1000,7 @@ class _Appearance extends ConsumerWidget {
         ),
         const SizedBox(height: 8),
         _Group(
+          id: 'surfaces',
           title: 'Surfaces',
           subtitle: 'Contrast and artwork tinting',
           child: Column(
@@ -871,6 +1055,7 @@ class _Lyrics extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final prefs = ref.watch(prefsProvider);
     return _Group(
+      id: 'lyrics-timing',
       title: 'Timing',
       subtitle: 'Synced lyrics providers',
       child: Column(
@@ -929,6 +1114,7 @@ class _ScrobblerState extends ConsumerState<_Scrobbler> {
         .clamp(25, 90)
         .toDouble();
     return _Group(
+      id: 'lastfm-scrobbling',
       title: 'Last.fm scrobbling',
       subtitle: 'Thresholds mirror Last.fm rules',
       child: Column(
@@ -995,6 +1181,7 @@ class _Sources extends ConsumerWidget {
         ? src.quotaByBase
         : const <String, AddonQuota>{};
     return _Group(
+      id: 'addon-sources',
       title: 'Addon sources',
       subtitle: urls.isEmpty
           ? 'No addon configured — using the built-in lossless backend'
@@ -1311,6 +1498,7 @@ class _About extends ConsumerWidget {
         if (Platform.isLinux) ...[
           const SizedBox(height: 8),
           _Group(
+            id: 'about-telemetry',
             title: 'System & Audio Telemetry',
             subtitle: 'Read live from this machine',
             child: Column(
@@ -1447,6 +1635,7 @@ class _General extends ConsumerWidget {
     return Column(
       children: [
         _Group(
+          id: 'behaviour',
           title: 'Behaviour',
           subtitle: 'Startup and window defaults',
           child: Column(
@@ -1569,6 +1758,7 @@ class _OpenWithState extends ConsumerState<_OpenWith> {
     if (!claims.isSupported) return const SizedBox.shrink();
     final opensSystemPage = Platform.isWindows;
     return _Group(
+      id: 'open-with',
       title: 'Open with',
       subtitle: 'Audio files in the system player menu',
       child: Column(
@@ -1612,6 +1802,7 @@ class _Playback extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final prefs = ref.watch(prefsProvider);
     return _Group(
+      id: 'playback',
       title: 'Playback',
       subtitle: 'Gapless, crossfade and output behaviour',
       child: Column(
@@ -1651,6 +1842,7 @@ class _LibrarySettings extends ConsumerWidget {
     return Column(
       children: [
         _Group(
+          id: 'music-folders',
           title: 'Music folders',
           subtitle: 'Folders scanned for local tracks',
           child: Column(
@@ -1700,6 +1892,7 @@ class _LibrarySettings extends ConsumerWidget {
         ),
         const SizedBox(height: 8),
         _Group(
+          id: 'indexing',
           title: 'Library indexing',
           subtitle: 'Scan watched folders into the local library',
           child: Column(
@@ -1769,6 +1962,7 @@ class _Downloads extends ConsumerWidget {
     final prefs = ref.watch(prefsProvider);
     final custom = prefs.downloadDir;
     return _Group(
+      id: 'offline',
       title: 'Offline',
       subtitle: 'Download behaviour and lyrics sidecars',
       child: Column(
@@ -1914,6 +2108,7 @@ class _ApiKeysState extends ConsumerState<_ApiKeys> {
     _secret ??= TextEditingController(text: prefs.lastFmApiSecret);
     final configured = prefs.isLastFmConfigured;
     return _Group(
+      id: 'api-keys',
       title: 'API keys',
       subtitle: 'Your own keys from last.fm/api/account/create',
       child: Column(
@@ -2008,6 +2203,7 @@ class _Experimental extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = ref.watch(themeControllerProvider);
     return _Group(
+      id: 'experimental',
       title: 'Experimental',
       subtitle: 'Opt-in desktop prototypes',
       child: Column(
