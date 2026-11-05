@@ -210,6 +210,10 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     } catch (_) {}
   }
 
+  /// Injectable wall clock for deterministic sleep-timer tests.
+  /// Defaults to the real clock; see [setSleepTimer].
+  final DateTime Function() now;
+
   PlaybackService(
     this._tube,
     this._lossless,
@@ -219,7 +223,9 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     this._sessions, [
     OfficialArtworkService? artworkService,
     this._onAddonQuota,
+    DateTime Function()? clock,
   ])  : _artworkService = artworkService ?? OfficialArtworkService(),
+        now = clock ?? DateTime.now,
         super(const PlayerSnapshot());
 
   Future<void> ensurePlayer() async {
@@ -883,6 +889,11 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     await setSpeed(steps[idx]);
   }
 
+  /// Set/replace/cancel the sleeping timer. Selected whole minutes are
+  /// echoed in state as [PlayerSnapshot.sleepMinutes] so the dock keeps
+  /// its original length while [PlayerSnapshot.sleepRemaining] counts
+  /// down. Off (`null`) clears both without touching playback — only
+  /// expiry pauses. The timer lives in this process only: exit resets it.
   void setSleepTimer(Duration? duration) {
     _sleepTimer?.cancel();
     if (duration == null) {
@@ -890,12 +901,15 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
       state = state.copyWith(clearSleep: true);
       return;
     }
-    _sleepDeadline = DateTime.now().add(duration);
-    state = state.copyWith(sleepRemaining: duration);
+    _sleepDeadline = now().add(duration);
+    state = state.copyWith(
+      sleepRemaining: duration,
+      sleepMinutes: duration.inMinutes,
+    );
     _sleepTimer = Timer.periodic(
       const Duration(seconds: 1),
       (_) {
-        final remaining = _sleepDeadline?.difference(DateTime.now());
+        final remaining = _sleepDeadline?.difference(now());
         if (remaining == null || remaining.isNegative) {
           _sleepTimer?.cancel();
           _sleepDeadline = null;

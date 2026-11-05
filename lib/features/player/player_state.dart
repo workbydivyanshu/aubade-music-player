@@ -19,6 +19,11 @@ class PlayerSnapshot {
   final ResolvedStream? stream;
   final String? error;
   final Duration? sleepRemaining;
+
+  /// Whole minutes the sleeper was set for. Persists while the timer
+  /// ticks so the dock label can keep saying "Sleep in N min" instead
+  /// of shrinking with [sleepRemaining]; cleared with the timer.
+  final int? sleepMinutes;
   final int bitrateKbps;
   final double volume;
   final PcmFormat? outputFormat;
@@ -40,6 +45,7 @@ class PlayerSnapshot {
     this.stream,
     this.error,
     this.sleepRemaining,
+    this.sleepMinutes,
     this.bitrateKbps = 0,
     this.volume = 1.0,
     this.outputFormat,
@@ -66,6 +72,7 @@ class PlayerSnapshot {
     bool clearError = false,
     Duration? sleepRemaining,
     bool clearSleep = false,
+    int? sleepMinutes,
     int? bitrateKbps,
     double? volume,
     PcmFormat? outputFormat,
@@ -89,6 +96,7 @@ class PlayerSnapshot {
         error: clearError ? null : (error ?? this.error),
         sleepRemaining:
             clearSleep ? null : (sleepRemaining ?? this.sleepRemaining),
+        sleepMinutes: clearSleep ? null : (sleepMinutes ?? this.sleepMinutes),
         bitrateKbps: bitrateKbps ?? this.bitrateKbps,
         volume: volume ?? this.volume,
         outputFormat:

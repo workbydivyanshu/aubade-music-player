@@ -20,7 +20,8 @@ import '../../features/search/shared_providers.dart';
 import '../../features/settings/theme_controller.dart';
 import '../components/ambient.dart';
 import '../components/artwork.dart';
-import '../components/buttons.dart' show LWTooltip, LWVolumeSlider;
+import '../components/buttons.dart'
+    show LWTooltip, LWVolumeSlider, WaveButton, WaveFilledButton;
 import '../components/focus_glyph.dart';
 import '../components/marquee.dart';
 import '../components/menus.dart';
@@ -1863,22 +1864,163 @@ class _DockOverflow extends ConsumerWidget {
           label: 'Speed $speedLabel×',
           onPressed: notifier.cycleSpeed,
         ),
-        WaveMenuAction(
-          leading: const Icon(WaveIcons.clock, size: 15),
-          label: sleep == null
-              ? 'Sleep timer · 30 min'
-              : 'Sleep ${sleep.inMinutes}m (tap to clear)',
-          onPressed: () {
-            if (sleep != null) {
-              notifier.setSleepTimer(null);
-            } else {
-              notifier.setSleepTimer(const Duration(minutes: 30));
-            }
-          },
-        ),
+        _sleepSubmenu(context, notifier, sleep),
       ],
     );
   }
+
+  /// Sleep timer rows: 15/30/60 presets, Custom… (whole minutes
+  /// 1–1440, inline-validated) and Cancel (enabled only while a timer
+  /// is active). The trigger label shows the live remaining time;
+  /// selecting a preset replaces, Cancel clears without pausing.
+  WaveMenuSubmenu _sleepSubmenu(
+    BuildContext context,
+    PlaybackService notifier,
+    Duration? sleep,
+  ) {
+    return WaveMenuSubmenu(
+      leading: const Icon(WaveIcons.clock, size: 15),
+      label: waveSleepTimerLabel(sleep),
+      items: () => waveSleepTimerMenuEntries(
+        sleepRemaining: sleep,
+        onStart: notifier.setSleepTimer,
+        onCustom: () => unawaited(
+          _showCustomSleepDialog(context, notifier),
+        ),
+        onCancel: () => notifier.setSleepTimer(null),
+      ),
+    );
+  }
+
+  /// Custom-range dialog: digits-only minutes, inline validation with
+  /// [kSleepTimerCustomError]; Start pops with the Duration for the
+  /// caller to hand to `setSleepTimer`. Cancel/invalid leaves the
+  /// active timer untouched.
+  Future<void> _showCustomSleepDialog(
+    BuildContext context,
+    PlaybackService notifier,
+  ) async {
+    final controller = TextEditingController();
+    var error = '';
+    final started = await showDialog<Duration>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => ContentDialog(
+          title: const Text('Sleep timer'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Minutes', style: WaveType.label),
+              const SizedBox(height: 4),
+              TextBox(
+                autofocus: true,
+                controller: controller,
+                placeholder: '1–1440',
+                keyboardType: TextInputType.number,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                ],
+              ),
+              if (error.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  error,
+                  style: WaveType.meta.copyWith(color: Colors.red),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            WaveButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            WaveFilledButton(
+              onPressed: () {
+                final mins = parseCustomSleepMinutes(controller.text);
+                if (mins == null) {
+                  setDialogState(() => error = kSleepTimerCustomError);
+                  return;
+                }
+                Navigator.of(dialogContext).pop(Duration(minutes: mins));
+              },
+              child: const Text('Start timer'),
+            ),
+          ],
+        ),
+      ),
+    );
+    controller.dispose();
+    if (started != null) notifier.setSleepTimer(started);
+  }
+}
+
+/// Sleep-timer presets shown in the dock submenu. Off/replace/cancel
+/// semantics live on `PlaybackService.setSleepTimer`: a selection
+/// replaces the deadline immediately; Off clears without pausing
+/// playback; the chosen length stays visible while remaining ticks.
+const List<Duration> kSleepTimerPresets = [
+  Duration(minutes: 15),
+  Duration(minutes: 30),
+  Duration(minutes: 60),
+];
+
+/// Valid custom range for the sleep timer, inclusive whole minutes.
+const (int, int) kSleepTimerCustomRange = (1, 1440);
+
+const String kSleepTimerCustomError = 'Enter 1–1440 minutes.';
+
+/// Dock More sleep-timer label. Inactive shows the plain title; active
+/// keeps the chosen length visible ("Sleep in N min") while
+/// [PlayerSnapshot.sleepRemaining] ticks down underneath.
+String waveSleepTimerLabel(Duration? remaining) {
+  if (remaining == null) return 'Sleep timer';
+  final mins = remaining.inMinutes;
+  return mins >= 1 ? 'Sleep in $mins min' : 'Sleep in less than 1 min';
+}
+
+/// Custom whole-minutes input → timer minutes. Validated inline in the
+/// dock dialog: null/zero/negative/out-of-range leaves no timer state
+/// behind, so the caller keeps the active timer untouched.
+int? parseCustomSleepMinutes(String raw) {
+  final v = int.tryParse(raw.trim());
+  if (v == null) return null;
+  if (v < kSleepTimerCustomRange.$1 || v > kSleepTimerCustomRange.$2) {
+    return null;
+  }
+  return v;
+}
+
+/// Sleep timer submenu rows shared by the dock and tests. Presets
+/// replace, the divider separates Custom…, and Cancel (when the timer
+/// is active) clears without pausing playback.
+List<WaveMenuEntry> waveSleepTimerMenuEntries({
+  required Duration? sleepRemaining,
+  required void Function(Duration minutes) onStart,
+  required VoidCallback onCustom,
+  required VoidCallback onCancel,
+}) {
+  return [
+    for (final preset in kSleepTimerPresets)
+      WaveMenuAction(
+        leading: const Icon(WaveIcons.clock, size: 15),
+        label: '${preset.inMinutes} min',
+        onPressed: () => onStart(preset),
+      ),
+    const WaveMenuSeparator(),
+    WaveMenuAction(
+      leading: const Icon(WaveIcons.clock, size: 15),
+      label: 'Custom…',
+      onPressed: onCustom,
+    ),
+    const WaveMenuSeparator(),
+    WaveMenuAction(
+      leading: const Icon(WaveIcons.clock, size: 15),
+      label: 'Cancel sleep timer',
+      onPressed: sleepRemaining == null ? null : onCancel,
+    ),
+  ];
 }
 
 /// Mirrors a local like/unlike into Last.fm (`track.love` /
