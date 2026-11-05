@@ -12,6 +12,32 @@ This repo is Aubade. Its source bench is `https://github.com/Clash-Projects/Last
 6. Port by content on Aubade's **`mainline` branch first**, as one reviewable Aubade commit per approved upstream change. Keep upstream SHAs in internal notes only. Never commit to upstream. Run `flutter analyze --no-fatal-infos`, `flutter test --exclude-tags=live`, relevant platform builds, and the release checks before promoting `mainline` to `main` or tagging a release.
 7. After shipping or explicitly closing a batch, record its final upstream tip, PORT/SKIP decisions, Aubade commit SHAs, and verification evidence here. Keep unfinished batches marked unfinished.
 
+## Shipped v1.1.0 release wave
+
+The user approved six feature behaviors + full accessibility citizenship for the v1.1.0 wave.
+Implemented via clean-room design and landed on `mainline` then promoted to `main` (`6e290f3`):
+
+| Feature | Aubade commit | Implementation Summary |
+|---|---|---|
+| Sleep timer | `6f55c65` | Presets (15, 30, 45, 60m), custom minutes input, persistent state, dock countdown pill with remaining time |
+| Playlist sort | `3ca5f1c` | 6 persistent sort options per playlist, DropDownButton UI, controlled desktop table sort |
+| Settings search | `4c6fc81` | Real-time query catalog, search results dropdown, section switch, auto-scroll and 2.2s flash highlight |
+| Queue lock & Privacy | `f6de670` | Session-only queue lock (blocks clear/remove/reorder while seek/play works); privacy-preserving track properties |
+| Spotlight track menus | `aaa147f` | Context menu on track results only, More options button, keyboard activation via ContextMenu shortcut |
+| Accessibility citizenship | `207148e` | Full semantics tree (buttons, sliders, toggles, selections), FocusGlyph traversal, playback announcement deduplication |
+| Version bump & release prep | `6e290f3` | Bump `pubspec.yaml` to `1.1.0+1` and fallback version to `1.1.0` |
+
+Verification on the complete v1.1.0 tree:
+- `flutter analyze --no-fatal-infos`: 0 issues found.
+- `flutter test --exclude-tags=live`: 698 tests passed, 8 skipped.
+- Linux release bundle built cleanly with zero missing dynamic dependencies.
+- Mainline CI run `42001706639` passed all jobs (Linux, Windows, macOS).
+- Fast-forward merge `mainline` -> `main` at `6e290f3`.
+- Annotated release tag `v1.1.0` published.
+- Tag release pipeline `42002890961` passed all jobs (Linux, Windows, macOS, Publish GitHub Release).
+- All 7 expected assets verified present with SHA-256 digests.
+- 3 redirect endpoints verified: `/download/fedora` -> `aubade_1.1.0_x86_64.rpm`, `/download/windows` -> `aubade_1.1.0_windows-x86_64-setup.exe`, `/download/macos` -> `aubade_1.1.0_macos.dmg` (all HTTP 302 -> 200).
+
 ## Current v1.0.9 batch
 
 The user approved these six content ports. They landed separately on Aubade's
