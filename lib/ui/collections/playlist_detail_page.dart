@@ -257,23 +257,26 @@ class _WavePlaylistDetailPageState
                         '${tracks.length} tracks',
                     sortSlot: LWTooltip(
                       message: 'Sort (also sortable via table headers)',
-                      child: DropDownButton(
-                        transitionBuilder: fastFlyoutTransition,
-                        title: Text(playlistSortOptionLabel(_sort)),
-                        items: [
-                          for (final option in playlistSortOptions)
-                            MenuFlyoutItem(
-                              text: Text(playlistSortOptionLabel(option)),
-                              trailing:
-                                  option == _sort
-                                      ? const Icon(
-                                          FluentIcons.check_mark,
-                                          size: 14,
-                                        )
-                                      : null,
-                              onPressed: () => _changeSort(option),
-                            ),
-                        ],
+                      child: Semantics(
+                        label: 'Sort order: ${playlistSortOptionLabel(_sort)}',
+                        child: DropDownButton(
+                          transitionBuilder: fastFlyoutTransition,
+                          title: Text(playlistSortOptionLabel(_sort)),
+                          items: [
+                            for (final option in playlistSortOptions)
+                              MenuFlyoutItem(
+                                text: Text(playlistSortOptionLabel(option)),
+                                trailing:
+                                    option == _sort
+                                        ? const Icon(
+                                            FluentIcons.check_mark,
+                                            size: 14,
+                                          )
+                                        : null,
+                                onPressed: () => _changeSort(option),
+                              ),
+                          ],
+                        ),
                       ),
                     ),
                   ),

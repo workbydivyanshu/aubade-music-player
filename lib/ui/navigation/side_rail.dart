@@ -270,9 +270,16 @@ class _RailItemState extends State<_RailItem> {
         ),
       ),
     );
-    return LWTooltip(
-      message: widget.destination.label,
-      child: content,
+    return Semantics(
+      container: true,
+      button: true,
+      selected: widget.selected,
+      label: widget.destination.label,
+      excludeSemantics: true,
+      child: LWTooltip(
+        message: widget.destination.label,
+        child: content,
+      ),
     );
   }
 }

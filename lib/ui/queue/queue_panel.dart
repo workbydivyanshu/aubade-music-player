@@ -9,6 +9,7 @@ import '../../features/downloads/download_manager.dart';
 import '../../features/player/playback_service.dart';
 import '../components/artwork.dart';
 import '../components/buttons.dart' show LWTooltip, WaveButton, WaveFilledButton, WaveLink;
+import '../components/focus_glyph.dart';
 import '../components/menus.dart';
 import '../theme/haze.dart';
 import '../theme/tokens.dart';
@@ -587,31 +588,41 @@ class _QueueLockGlyphState extends State<_QueueLockGlyph> {
     final hoverColor =
         dark ? WaveColors.textPrimary : WaveColors.lightTextPrimary;
 
-    return LWTooltip(
-      message: tooltip,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        onEnter: (_) => setState(() => _hover = true),
-        onExit: (_) => setState(() => _hover = false),
-        child: GestureDetector(
-          onTap: widget.onTap,
-          behavior: HitTestBehavior.opaque,
-          child: Container(
-            width: 24,
-            height: 24,
-            decoration: BoxDecoration(
-              color: _hover
-                  ? (dark ? const Color(0xFFFFFFFF) : const Color(0xFF000000))
-                      .withValues(alpha: WaveState.hoverAlpha)
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(WaveRadius.controls),
-            ),
-            child: Icon(
-              icon,
-              size: 13,
-              color: widget.locked
-                  ? activeColor
-                  : (_hover ? hoverColor : idleColor),
+    return Semantics(
+      container: true,
+      button: true,
+      label: tooltip,
+      toggled: widget.locked,
+      excludeSemantics: true,
+      child: LWTooltip(
+        message: tooltip,
+        child: FocusGlyph(
+          onActivate: widget.onTap,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            onEnter: (_) => setState(() => _hover = true),
+            onExit: (_) => setState(() => _hover = false),
+            child: GestureDetector(
+              onTap: widget.onTap,
+              behavior: HitTestBehavior.opaque,
+              child: Container(
+                width: 24,
+                height: 24,
+                decoration: BoxDecoration(
+                  color: _hover
+                      ? (dark ? const Color(0xFFFFFFFF) : const Color(0xFF000000))
+                          .withValues(alpha: WaveState.hoverAlpha)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(WaveRadius.controls),
+                ),
+                child: Icon(
+                  icon,
+                  size: 13,
+                  color: widget.locked
+                      ? activeColor
+                      : (_hover ? hoverColor : idleColor),
+                ),
+              ),
             ),
           ),
         ),

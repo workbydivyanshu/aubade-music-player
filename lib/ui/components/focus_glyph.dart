@@ -24,6 +24,7 @@ class FocusGlyph extends StatefulWidget {
   final BorderRadius borderRadius;
   final FocusNode? focusNode;
   final bool autofocus;
+  final String? semanticLabel;
 
   const FocusGlyph({
     super.key,
@@ -33,6 +34,7 @@ class FocusGlyph extends StatefulWidget {
     this.borderRadius = const BorderRadius.all(Radius.circular(6)),
     this.focusNode,
     this.autofocus = false,
+    this.semanticLabel,
   });
 
   @override
@@ -94,7 +96,14 @@ class _FocusGlyphState extends State<FocusGlyph> {
               width: 1,
             ),
           ),
-          child: widget.child,
+          child: widget.semanticLabel != null
+              ? Semantics(
+                  button: true,
+                  enabled: _actionable,
+                  label: widget.semanticLabel,
+                  child: widget.child,
+                )
+              : widget.child,
         ),
       ),
     );

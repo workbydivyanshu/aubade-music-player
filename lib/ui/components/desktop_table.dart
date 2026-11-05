@@ -1049,7 +1049,15 @@ class _TableRow<T extends Object> extends StatelessWidget {
       ),
     );
 
-    return WaveContextMenu(items: menuItems, child: row);
+    return WaveContextMenu(
+      items: menuItems,
+      child: Semantics(
+        label: '$title by $artist',
+        button: true,
+        selected: selected || current,
+        child: row,
+      ),
+    );
   }
 }
 

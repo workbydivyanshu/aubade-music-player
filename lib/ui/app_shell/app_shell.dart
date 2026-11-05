@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -15,6 +16,7 @@ import '../../app/window_lifecycle.dart';
 import '../../core/audio/stream_models.dart';
 import '../../features/library/supported_audio.dart';
 import '../../features/player/playback_service.dart';
+import '../../features/player/player_state.dart';
 import '../../features/search/search_repository.dart';
 import '../../features/updater/update_models.dart';
 import '../../features/updater/update_service.dart';
@@ -213,6 +215,37 @@ class _WaveShellState extends ConsumerState<WaveShell> {
     // list (see wave_hotkeys.dart).
     HardwareKeyboard.instance.addHandler(_onGlobalKey);
     _wireUpdateChecks();
+    _wirePlaybackAnnouncements();
+  }
+
+  /// Announces track transitions and play/pause state changes to assistive
+  /// technology while deduplicating track-change play events.
+  void _wirePlaybackAnnouncements() {
+    ref.listenManual<PlayerSnapshot>(playbackServiceProvider, (previous, next) {
+      if (!mounted) return;
+      final view =
+          View.maybeOf(context) ?? ui.PlatformDispatcher.instance.implicitView;
+      if (view == null) return;
+      final prevTrack = previous?.current;
+      final nextTrack = next.current;
+      if (nextTrack != null && nextTrack.queueKey != prevTrack?.queueKey) {
+        SemanticsService.sendAnnouncement(
+          view,
+          'Now playing: ${nextTrack.title} by ${nextTrack.artist}',
+          ui.TextDirection.ltr,
+        );
+        return;
+      }
+      if (previous != null &&
+          next.isPlaying != previous.isPlaying &&
+          nextTrack != null) {
+        SemanticsService.sendAnnouncement(
+          view,
+          next.isPlaying ? 'Playing' : 'Paused',
+          ui.TextDirection.ltr,
+        );
+      }
+    });
   }
 
   /// Automatic update checks: one shortly after boot, then on the

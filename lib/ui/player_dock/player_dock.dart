@@ -832,6 +832,7 @@ class _GlyphState extends State<_Glyph> {
     Widget glyph = FocusGlyph(
       enabled: !disabled,
       onActivate: widget.onTap,
+      semanticLabel: widget.tooltip,
       child: MouseRegion(
         cursor: disabled ? SystemMouseCursors.basic : SystemMouseCursors.click,
         onEnter: (_) => setState(() => _hover = true),
@@ -866,6 +867,7 @@ class _GlyphState extends State<_Glyph> {
         placement: FlyoutPlacementMode.topRight,
         buttonBuilder: (context, onOpen) => FocusGlyph(
           onActivate: onOpen,
+          semanticLabel: widget.tooltip,
           child: MouseRegion(
             cursor: SystemMouseCursors.click,
             onEnter: (_) => setState(() => _hover = true),
@@ -949,109 +951,114 @@ class _PlayGlyphState extends State<_PlayGlyph> {
         : onAccent.withValues(alpha: 0.5);
     return LWTooltip(
       message: widget.playing ? 'Pause (Space)' : 'Play (Space)',
-      child: Focus(
-        focusNode: _focus,
-        onFocusChange: (_) => setState(() {}),
-        onKeyEvent: (node, event) {
-          // Space is owned by the global shell handler (always toggles
-          // playback, even when this glyph has focus). Enter still
-          // activates the focused glyph natively.
-          if (event is KeyDownEvent &&
-              event.logicalKey == LogicalKeyboardKey.enter) {
-            if (widget.enabled) widget.onTap();
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        },
-        child: MouseRegion(
-          cursor: widget.enabled
-              ? SystemMouseCursors.click
-              : SystemMouseCursors.basic,
-          onEnter: (_) => setState(() => _hover = true),
-          onExit: (_) {
-            setState(() {
-              _hover = false;
-              _pressed = false;
-            });
+      child: Semantics(
+        button: true,
+        enabled: widget.enabled,
+        label: widget.playing ? 'Pause' : 'Play',
+        child: Focus(
+          focusNode: _focus,
+          onFocusChange: (_) => setState(() {}),
+          onKeyEvent: (node, event) {
+            // Space is owned by the global shell handler (always toggles
+            // playback, even when this glyph has focus). Enter still
+            // activates the focused glyph natively.
+            if (event is KeyDownEvent &&
+                event.logicalKey == LogicalKeyboardKey.enter) {
+              if (widget.enabled) widget.onTap();
+              return KeyEventResult.handled;
+            }
+            return KeyEventResult.ignored;
           },
-          child: GestureDetector(
-            onTapDown: (_) =>
-                setState(() => _pressed = true),
-            onTapUp: (_) =>
-                setState(() => _pressed = false),
-            onTapCancel: () =>
-                setState(() => _pressed = false),
-            onTap: widget.enabled ? widget.onTap : null,
-            child: AnimatedScale(
-              scale: WaveMotion.interactionScaleFor(
-                context,
-                hovered: _hover,
-                pressed: _pressed,
-                hoverScale: 1.06,
-                pressScale: 0.92,
-              ),
-              duration: WaveMotion.fast,
-              curve: Curves.easeOutCubic,
-              child: AnimatedContainer(
-                duration: WaveMotion.fast,
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: bg,
-                  border: Border.all(
-                    color: (_focus.hasFocus
-                            ? accent
-                            : (dark
-                                ? Colors.white
-                                : Colors.black))
-                        .withValues(
-                            alpha: _focus.hasFocus ? 0.9 : 0.14),
-                    width: _focus.hasFocus ? 2 : 1,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(
-                          alpha: dark ? 0.45 : 0.18),
-                      blurRadius: 8,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+          child: MouseRegion(
+            cursor: widget.enabled
+                ? SystemMouseCursors.click
+                : SystemMouseCursors.basic,
+            onEnter: (_) => setState(() => _hover = true),
+            onExit: (_) {
+              setState(() {
+                _hover = false;
+                _pressed = false;
+              });
+            },
+            child: GestureDetector(
+              onTapDown: (_) =>
+                  setState(() => _pressed = true),
+              onTapUp: (_) =>
+                  setState(() => _pressed = false),
+              onTapCancel: () =>
+                  setState(() => _pressed = false),
+              onTap: widget.enabled ? widget.onTap : null,
+              child: AnimatedScale(
+                scale: WaveMotion.interactionScaleFor(
+                  context,
+                  hovered: _hover,
+                  pressed: _pressed,
+                  hoverScale: 1.06,
+                  pressScale: 0.92,
                 ),
-                child: Center(
-                  child: widget.buffering
-                      ? SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: ProgressRing(
-                            strokeWidth: 2.5,
-                            activeColor: fg,
-                            backgroundColor:
-                                fg.withValues(alpha: 0.25),
-                          ),
-                        )
-                      : AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 180),
-                          transitionBuilder: (child, animation) =>
-                              ScaleTransition(
-                            scale: CurvedAnimation(
-                              parent: animation,
-                              curve: Curves.easeOutBack,
+                duration: WaveMotion.fast,
+                curve: Curves.easeOutCubic,
+                child: AnimatedContainer(
+                  duration: WaveMotion.fast,
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: bg,
+                    border: Border.all(
+                      color: (_focus.hasFocus
+                              ? accent
+                              : (dark
+                                  ? Colors.white
+                                  : Colors.black))
+                          .withValues(
+                              alpha: _focus.hasFocus ? 0.9 : 0.14),
+                      width: _focus.hasFocus ? 2 : 1,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(
+                            alpha: dark ? 0.45 : 0.18),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Center(
+                    child: widget.buffering
+                        ? SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: ProgressRing(
+                              strokeWidth: 2.5,
+                              activeColor: fg,
+                              backgroundColor:
+                                  fg.withValues(alpha: 0.25),
                             ),
-                            child: FadeTransition(
-                              opacity: animation,
-                              child: child,
+                          )
+                        : AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 180),
+                            transitionBuilder: (child, animation) =>
+                                ScaleTransition(
+                              scale: CurvedAnimation(
+                                parent: animation,
+                                curve: Curves.easeOutBack,
+                              ),
+                              child: FadeTransition(
+                                opacity: animation,
+                                child: child,
+                              ),
+                            ),
+                            child: Icon(
+                              widget.playing
+                                  ? WaveIcons.pause
+                                  : WaveIcons.play,
+                              key: ValueKey(widget.playing),
+                              size: 15,
+                              color: fg,
                             ),
                           ),
-                          child: Icon(
-                            widget.playing
-                                ? WaveIcons.pause
-                                : WaveIcons.play,
-                            key: ValueKey(widget.playing),
-                            size: 15,
-                            color: fg,
-                          ),
-                        ),
+                  ),
                 ),
               ),
             ),
@@ -1921,12 +1928,23 @@ class _DockOverflow extends ConsumerWidget {
                 inputFormatters: [
                   FilteringTextInputFormatter.digitsOnly,
                 ],
+                onSubmitted: (_) {
+                  final mins = parseCustomSleepMinutes(controller.text);
+                  if (mins == null) {
+                    setDialogState(() => error = kSleepTimerCustomError);
+                    return;
+                  }
+                  Navigator.of(dialogContext).pop(Duration(minutes: mins));
+                },
               ),
               if (error.isNotEmpty) ...[
                 const SizedBox(height: 6),
-                Text(
-                  error,
-                  style: WaveType.meta.copyWith(color: Colors.red),
+                Semantics(
+                  liveRegion: true,
+                  child: Text(
+                    error,
+                    style: WaveType.meta.copyWith(color: Colors.red),
+                  ),
                 ),
               ],
             ],

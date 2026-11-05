@@ -109,7 +109,13 @@ class _WaveIconButtonState extends State<WaveIconButton> {
 
     return LWTooltip(
       message: widget.tooltip,
-      child: button,
+      child: Semantics(
+        button: true,
+        label: widget.tooltip,
+        enabled: !disabled,
+        selected: widget.selected,
+        child: button,
+      ),
     );
   }
 }
@@ -338,7 +344,12 @@ class _WavePlayButtonState extends State<WavePlayButton> {
 
     return LWTooltip(
       message: widget.playing ? 'Pause' : 'Play',
-      child: button,
+      child: Semantics(
+        button: true,
+        enabled: !disabled,
+        label: widget.playing ? 'Pause' : 'Play',
+        child: button,
+      ),
     );
   }
 }
@@ -572,7 +583,15 @@ class LWPlaybackButton extends StatelessWidget {
       ),
     );
     final label = tooltip ?? (playing ? 'Pause' : 'Play');
-    return LWTooltip(message: label, child: button);
+    return LWTooltip(
+      message: label,
+      child: Semantics(
+        button: true,
+        enabled: onPressed != null,
+        label: label,
+        child: button,
+      ),
+    );
   }
 }
 
@@ -593,6 +612,7 @@ class LWProgressSlider extends StatelessWidget {
   Widget build(BuildContext context) {
     return _WaveSliderBase(
       value: value,
+      semanticLabel: 'Seek',
       onChanged: onChanged,
       onChangeEnd: onChangeEnd,
     );
@@ -616,25 +636,28 @@ class LWVolumeSlider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
+    return _WaveSliderBase(
       width: width,
-      child: _WaveSliderBase(
-        value: value,
-        onChanged: onChanged,
-        onChangeEnd: onChangeEnd,
-      ),
+      value: value,
+      semanticLabel: 'Volume',
+      onChanged: onChanged,
+      onChangeEnd: onChangeEnd,
     );
   }
 }
 
 class _WaveSliderBase extends StatefulWidget {
   final double value;
+  final double? width;
   final ValueChanged<double>? onChanged;
   final ValueChanged<double>? onChangeEnd;
+  final String? semanticLabel;
   const _WaveSliderBase({
     required this.value,
+    this.width,
     this.onChanged,
     this.onChangeEnd,
+    this.semanticLabel,
   });
 
   @override
@@ -675,7 +698,7 @@ class _WaveSliderBaseState extends State<_WaveSliderBase> {
     // between two glyphs. Any non-zero value keeps its knob; hover grows it.
     final thumbSize = active ? 10.0 : 8.0;
     final showThumb = active || widget.value > 0.001;
-    final slider = MouseRegion(
+    final content = MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
@@ -791,7 +814,22 @@ class _WaveSliderBaseState extends State<_WaveSliderBase> {
         ),
       ),
     );
-    return slider;
+    final body = widget.width != null
+        ? SizedBox(width: widget.width, child: content)
+        : content;
+    return Semantics(
+      container: true,
+      slider: true,
+      label: widget.semanticLabel,
+      value: '${(widget.value * 100).round()}%',
+      increasedValue:
+          '${((widget.value + 0.05).clamp(0.0, 1.0) * 100).round()}%',
+      decreasedValue:
+          '${((widget.value - 0.05).clamp(0.0, 1.0) * 100).round()}%',
+      onIncrease: () => _step(0.05),
+      onDecrease: () => _step(-0.05),
+      child: body,
+    );
   }
 }
 

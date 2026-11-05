@@ -334,20 +334,25 @@ class _WaveTrackRowState extends ConsumerState<WaveTrackRow> {
       ),
     );
 
-    return WaveContextMenu(
-      items: () => waveTrackMenuItems(
-        context: context,
-        ref: ref,
-        title: widget.title,
-        artist: widget.artist,
-        artworkUrl: widget.artworkUrl,
-        videoId: widget.videoId,
-        album: widget.album,
-        playable: widget.playable,
-        removeLabel: widget.removeLabel,
-        onRemove: widget.onRemove,
+    return Semantics(
+      label: '${widget.title} by ${widget.artist}',
+      button: true,
+      selected: widget.isCurrent,
+      child: WaveContextMenu(
+        items: () => waveTrackMenuItems(
+          context: context,
+          ref: ref,
+          title: widget.title,
+          artist: widget.artist,
+          artworkUrl: widget.artworkUrl,
+          videoId: widget.videoId,
+          album: widget.album,
+          playable: widget.playable,
+          removeLabel: widget.removeLabel,
+          onRemove: widget.onRemove,
+        ),
+        child: row,
       ),
-      child: row,
     );
   }
 }

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -395,22 +396,34 @@ class _SearchField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return TextBox(
-      controller: controller,
-      onChanged: (_) => onChanged(),
-      placeholder: 'Search settings',
-      suffix: ListenableBuilder(
-        listenable: controller,
-        builder: (context, _) => controller.text.isEmpty
-            ? const SizedBox.shrink()
-            : WaveIconButton(
-                tooltip: 'Clear search',
-                icon: const Icon(FluentIcons.clear),
-                onPressed: () {
-                  controller.clear();
-                  onChanged();
-                },
-              ),
+    return Focus(
+      onKeyEvent: (node, event) {
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.escape &&
+            controller.text.isNotEmpty) {
+          controller.clear();
+          onChanged();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: TextBox(
+        controller: controller,
+        onChanged: (_) => onChanged(),
+        placeholder: 'Search settings',
+        suffix: ListenableBuilder(
+          listenable: controller,
+          builder: (context, _) => controller.text.isEmpty
+              ? const SizedBox.shrink()
+              : WaveIconButton(
+                  tooltip: 'Clear search',
+                  icon: const Icon(FluentIcons.clear),
+                  onPressed: () {
+                    controller.clear();
+                    onChanged();
+                  },
+                ),
+        ),
       ),
     );
   }

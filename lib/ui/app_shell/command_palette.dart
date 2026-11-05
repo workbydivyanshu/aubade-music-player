@@ -1509,24 +1509,28 @@ class _SpotHeroCardState extends ConsumerState<_SpotHeroCard> {
                   const SizedBox(width: 8),
                   LWTooltip(
                     message: 'More',
-                    child: MouseRegion(
-                      cursor: SystemMouseCursors.click,
-                      child: GestureDetector(
-                        onTap: openMenu,
-                        child: Container(
-                          width: 34,
-                          height: 34,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: _spotlightWash(context, 0.10),
-                            borderRadius: BorderRadius.circular(17),
-                          ),
-                          child: Icon(
-                            WaveIcons.more,
-                            size: 14,
-                            color: isSelected
-                                ? _spotlightSelect(context)
-                                : waveTextPrimary(context),
+                    child: Semantics(
+                      button: true,
+                      label: 'More options for ${r.label}',
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: openMenu,
+                          child: Container(
+                            width: 34,
+                            height: 34,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: _spotlightWash(context, 0.10),
+                              borderRadius: BorderRadius.circular(17),
+                            ),
+                            child: Icon(
+                              WaveIcons.more,
+                              size: 14,
+                              color: isSelected
+                                  ? _spotlightSelect(context)
+                                  : waveTextPrimary(context),
+                            ),
                           ),
                         ),
                       ),
@@ -1754,23 +1758,27 @@ class _SpotRowState extends ConsumerState<_SpotRow> {
                     child: (isHovered || isSelected)
                         ? LWTooltip(
                             message: 'More',
-                            child: MouseRegion(
-                              cursor: SystemMouseCursors.click,
-                              child: GestureDetector(
-                                onTap: openMenu,
-                                child: Container(
-                                  width: 28,
-                                  height: 28,
-                                  alignment: Alignment.center,
-                                  decoration: BoxDecoration(
-                                    color: _spotlightWash(context, 0.08),
-                                    borderRadius: BorderRadius.circular(
-                                        WaveRadius.controls),
-                                  ),
-                                  child: Icon(
-                                    WaveIcons.more,
-                                    size: 13,
-                                    color: waveTextSecondary(context),
+                            child: Semantics(
+                              button: true,
+                              label: 'More options for ${r.label}',
+                              child: MouseRegion(
+                                cursor: SystemMouseCursors.click,
+                                child: GestureDetector(
+                                  onTap: openMenu,
+                                  child: Container(
+                                    width: 28,
+                                    height: 28,
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: _spotlightWash(context, 0.08),
+                                      borderRadius: BorderRadius.circular(
+                                          WaveRadius.controls),
+                                    ),
+                                    child: Icon(
+                                      WaveIcons.more,
+                                      size: 13,
+                                      color: waveTextSecondary(context),
+                                    ),
                                   ),
                                 ),
                               ),

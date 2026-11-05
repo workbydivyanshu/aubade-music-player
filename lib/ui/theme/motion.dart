@@ -196,6 +196,7 @@ class WaveEntrance extends StatelessWidget {
   Widget _paint(double t, Widget child) {
     return Opacity(
       opacity: t,
+      alwaysIncludeSemantics: true,
       child: Transform.translate(
         offset: Offset(0, rise * (1 - t)),
         child: child,
