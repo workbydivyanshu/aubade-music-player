@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/track_actions.dart'
     show formatDuration, playGenerated, playableFromGenerated;
+import '../../core/storage/prefs.dart' show prefsProvider, PlaylistSortDirection, PlaylistSortMode, PlaylistSortPreference;
 import '../../features/downloads/download_manager.dart';
 import '../../features/feed/feed_repository.dart';
 import '../../features/library/playlists.dart';
@@ -39,12 +42,36 @@ class _WavePlaylistDetailPageState
     extends ConsumerState<WavePlaylistDetailPage> {
   final _filter = TextEditingController();
   String _q = '';
-  String _sort = 'default';
+  PlaylistSortPreference _sort = PlaylistSortPreference.defaults;
+
+  @override
+  void initState() {
+    super.initState();
+    // Restore this playlist's persisted selection before the first
+    // frame so the dropdown label and row order never jump.
+    _sort = ref
+        .read(prefsProvider)
+        .playlistSort(widget.id);
+  }
 
   @override
   void dispose() {
     _filter.dispose();
     super.dispose();
+  }
+
+  void _changeSort(PlaylistSortPreference next) {
+    setState(() => _sort = next);
+    unawaited(
+      ref.read(prefsProvider).setPlaylistSort(widget.id, next),
+    );
+  }
+
+  /// Header tap → next option: a new column starts ascending, tapping
+  /// the active column flips its direction. Default order is reachable
+  /// only from the dropdown, mirroring the keyboard/table contract.
+  void _changePlaylistSortFromHeader(int col) {
+    _changeSort(nextPlaylistSortOnHeader(_sort, col));
   }
 
   @override
@@ -68,11 +95,12 @@ class _WavePlaylistDetailPageState
               .contains(_q.toLowerCase()),
         )
         .toList();
-    if (_sort == 'title') {
-      tracks.sort((a, b) => a.name.compareTo(b.name));
-    } else if (_sort == 'artist') {
-      tracks.sort((a, b) => a.artist.compareTo(b.artist));
-    }
+    applyPlaylistSort(
+      tracks,
+      _sort,
+      titleOf: (t) => t.name,
+      artistOf: (t) => t.artist,
+    );
     // Note: Album/Duration sorts are intentionally omitted — local
     // playlist tracks carry no album or duration metadata.
     final playingKey = ref.watch(
@@ -231,35 +259,20 @@ class _WavePlaylistDetailPageState
                       message: 'Sort (also sortable via table headers)',
                       child: DropDownButton(
                         transitionBuilder: fastFlyoutTransition,
-                        title: Text(
-                          _sort == 'default'
-                              ? 'Default order'
-                              : (_sort == 'title'
-                                  ? 'Title A–Z'
-                                  : 'Artist A–Z'),
-                        ),
+                        title: Text(playlistSortOptionLabel(_sort)),
                         items: [
-                          MenuFlyoutItem(
-                            text:
-                                const Text('Default order'),
-                            onPressed: () => setState(
-                              () => _sort = 'default',
+                          for (final option in playlistSortOptions)
+                            MenuFlyoutItem(
+                              text: Text(playlistSortOptionLabel(option)),
+                              trailing:
+                                  option == _sort
+                                      ? const Icon(
+                                          FluentIcons.check_mark,
+                                          size: 14,
+                                        )
+                                      : null,
+                              onPressed: () => _changeSort(option),
                             ),
-                          ),
-                          MenuFlyoutItem(
-                            text:
-                                const Text('Title A–Z'),
-                            onPressed: () => setState(
-                              () => _sort = 'title',
-                            ),
-                          ),
-                          MenuFlyoutItem(
-                            text:
-                                const Text('Artist A–Z'),
-                            onPressed: () => setState(
-                              () => _sort = 'artist',
-                            ),
-                          ),
                         ],
                       ),
                     ),
@@ -297,6 +310,11 @@ class _WavePlaylistDetailPageState
               durationSortOf: (t) => t.durationSeconds,
               titleSortOf: (t) => t.name.toLowerCase(),
               artistSortOf: (t) => t.artist.toLowerCase(),
+              onHeaderSort: _changePlaylistSortFromHeader,
+              controlledSortCol: _playlistSortCol(_sort),
+              controlledSortDir: _sort.direction == PlaylistSortDirection.desc
+                  ? WaveSortDir.desc
+                  : WaveSortDir.asc,
               isCurrent: (t) => playingKey == t.key,
               isPlaying: (t) {
                 final playing = ref.watch(
@@ -328,6 +346,106 @@ class _WavePlaylistDetailPageState
         ],
       ),
     );
+  }
+}
+
+/// The six persisted sort options shown in the playlist filter bar.
+/// Default order covers both source order (asc) and its exact reversal.
+const List<PlaylistSortPreference> playlistSortOptions = [
+  PlaylistSortPreference(),
+  PlaylistSortPreference(direction: PlaylistSortDirection.desc),
+  PlaylistSortPreference(mode: PlaylistSortMode.title),
+  PlaylistSortPreference(
+    mode: PlaylistSortMode.title,
+    direction: PlaylistSortDirection.desc,
+  ),
+  PlaylistSortPreference(mode: PlaylistSortMode.artist),
+  PlaylistSortPreference(
+    mode: PlaylistSortMode.artist,
+    direction: PlaylistSortDirection.desc,
+  ),
+];
+
+/// Dropdown / menu label for one sort selection.
+String playlistSortOptionLabel(PlaylistSortPreference p) =>
+    switch ((p.mode, p.direction)) {
+      (PlaylistSortMode.defaultOrder, PlaylistSortDirection.asc) =>
+        'Default order',
+      (PlaylistSortMode.defaultOrder, PlaylistSortDirection.desc) =>
+        'Reverse default order',
+      (PlaylistSortMode.title, PlaylistSortDirection.asc) => 'Title A–Z',
+      (PlaylistSortMode.title, PlaylistSortDirection.desc) => 'Title Z–A',
+      (PlaylistSortMode.artist, PlaylistSortDirection.asc) => 'Artist A–Z',
+      (PlaylistSortMode.artist, PlaylistSortDirection.desc) => 'Artist Z–A',
+    };
+
+/// Maps a sort preference onto the table header columns: only Title
+/// (0) and Artist (1) exist; Default order shows no indicator (-1).
+int _playlistSortCol(PlaylistSortPreference p) => switch (p.mode) {
+      PlaylistSortMode.title => 0,
+      PlaylistSortMode.artist => 1,
+      PlaylistSortMode.defaultOrder => -1,
+    };
+
+/// Header tap → next selection: a different column starts ascending,
+/// the active column flips its direction. Calls for non-sortable
+/// columns keep the current selection.
+PlaylistSortPreference nextPlaylistSortOnHeader(
+  PlaylistSortPreference current,
+  int col,
+) {
+  final mode = switch (col) {
+    0 => PlaylistSortMode.title,
+    1 => PlaylistSortMode.artist,
+    _ => current.mode,
+  };
+  if (mode == current.mode && current.mode != PlaylistSortMode.defaultOrder) {
+    return PlaylistSortPreference(
+      mode: mode,
+      direction: current.direction == PlaylistSortDirection.asc
+          ? PlaylistSortDirection.desc
+          : PlaylistSortDirection.asc,
+    );
+  }
+  return PlaylistSortPreference(mode: mode);
+}
+
+/// Applies a persisted sort selection in place on the filtered track
+/// list. Default order keeps source order (asc) or reverses it (desc);
+/// title/artist compare case-insensitively with direction applied and
+/// ties always falling back to source order in both directions (Dart's
+/// sort is not stable, so the tie-break is explicit).
+void applyPlaylistSort<T>(
+  List<T> items,
+  PlaylistSortPreference pref, {
+  required String Function(T) titleOf,
+  required String Function(T) artistOf,
+}) {
+  final n = items.length;
+  if (n < 2) return;
+  final src = List<T>.of(items);
+  final descending = pref.direction == PlaylistSortDirection.desc;
+  switch (pref.mode) {
+    case PlaylistSortMode.defaultOrder:
+      if (!descending) return;
+      for (var i = 0; i < n; i++) {
+        items[i] = src[n - 1 - i];
+      }
+    case PlaylistSortMode.title || PlaylistSortMode.artist:
+      final keyOf =
+          pref.mode == PlaylistSortMode.title ? titleOf : artistOf;
+      final indices = List<int>.generate(n, (i) => i);
+      indices.sort((a, b) {
+        var c = keyOf(src[a])
+            .toLowerCase()
+            .compareTo(keyOf(src[b]).toLowerCase());
+        if (c != 0) c = descending ? -c : c;
+        if (c != 0) return c;
+        return a.compareTo(b);
+      });
+      for (var i = 0; i < n; i++) {
+        items[i] = src[indices[i]];
+      }
   }
 }
 

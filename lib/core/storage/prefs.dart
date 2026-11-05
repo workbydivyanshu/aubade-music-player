@@ -64,6 +64,79 @@ const Map<String, String> _legacyPrefKeys = {
 const String _legacyLyricsOffsetPrefix = 'lw_lyrics_offset_';
 const String _lyricsOffsetPrefix = 'aubade_lyrics_offset_';
 
+/// The three local-playlist order modes shown in the collection filter bar.
+enum PlaylistSortMode { defaultOrder, title, artist }
+
+/// The direction applied to a [PlaylistSortMode].
+enum PlaylistSortDirection { asc, desc }
+
+/// One persisted local-playlist sort selection.
+///
+/// Storage deliberately remains a compact, forward-compatible string rather
+/// than separate keys: `default:asc`, `title:desc`, and so on. Unknown values
+/// always resolve to [defaults], so callers can read it synchronously before
+/// their first frame.
+class PlaylistSortPreference {
+  final PlaylistSortMode mode;
+  final PlaylistSortDirection direction;
+
+  const PlaylistSortPreference({
+    this.mode = PlaylistSortMode.defaultOrder,
+    this.direction = PlaylistSortDirection.asc,
+  });
+
+  static const defaults = PlaylistSortPreference();
+
+  String get storageValue => switch ((mode, direction)) {
+        (PlaylistSortMode.defaultOrder, PlaylistSortDirection.asc) =>
+          'default:asc',
+        (PlaylistSortMode.defaultOrder, PlaylistSortDirection.desc) =>
+          'default:desc',
+        (PlaylistSortMode.title, PlaylistSortDirection.asc) => 'title:asc',
+        (PlaylistSortMode.title, PlaylistSortDirection.desc) => 'title:desc',
+        (PlaylistSortMode.artist, PlaylistSortDirection.asc) => 'artist:asc',
+        (PlaylistSortMode.artist, PlaylistSortDirection.desc) => 'artist:desc',
+      };
+
+  factory PlaylistSortPreference.fromStorage(String? value) {
+    switch (value) {
+      case 'default:asc':
+        return defaults;
+      case 'default:desc':
+        return const PlaylistSortPreference(
+          direction: PlaylistSortDirection.desc,
+        );
+      case 'title:asc':
+        return const PlaylistSortPreference(mode: PlaylistSortMode.title);
+      case 'title:desc':
+        return const PlaylistSortPreference(
+          mode: PlaylistSortMode.title,
+          direction: PlaylistSortDirection.desc,
+        );
+      case 'artist:asc':
+        return const PlaylistSortPreference(mode: PlaylistSortMode.artist);
+      case 'artist:desc':
+        return const PlaylistSortPreference(
+          mode: PlaylistSortMode.artist,
+          direction: PlaylistSortDirection.desc,
+        );
+      default:
+        return defaults;
+    }
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is PlaylistSortPreference &&
+      other.mode == mode &&
+      other.direction == direction;
+
+  @override
+  int get hashCode => Object.hash(mode, direction);
+}
+
+const String _playlistSortPrefix = 'aubade_playlist_sort_';
+
 /// Settings + session persistence.
 ///
 /// Key names use the `aubade_*` prefix. Pre-rebrand `lw_*` keys are moved
@@ -491,6 +564,17 @@ class Prefs {
 
   Future<void> setDisablePoToken(bool v) =>
       _sp.setBool('aubade_disable_potoken', v);
+
+  // -- Per-playlist sort persistence ----------------------------------------
+  // Keyed by the local playlist's numeric id; unknown/corrupt values fall
+  // back to [PlaylistSortPreference.defaults] on read.
+
+  PlaylistSortPreference playlistSort(int playlistId) =>
+      PlaylistSortPreference.fromStorage(_sp.getString('$_playlistSortPrefix$playlistId'));
+
+  Future<void> setPlaylistSort(int playlistId, PlaylistSortPreference value) =>
+      _sp.setString(
+          '$_playlistSortPrefix$playlistId', value.storageValue);
 
   // -- Desktop-app Parity (Karaoke Lyrics & Visualizer & CD Mode) ------------
   int getLyricsOffset(String trackKey) =>

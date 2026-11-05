@@ -81,6 +81,15 @@ class WaveDesktopTable<T extends Object> extends ConsumerStatefulWidget {
   final Comparable Function(T item)? durationSortOf;
   final Comparable Function(T item)? dateAddedSortOf;
 
+  /// Controlled header-sort mode for callers that own sort state
+  /// (persisted per playlist etc.). When [onHeaderSort] is present,
+  /// header taps route to it and the displayed column/direction come
+  /// from the pass-through values below (`col = -1` = none sorted);
+  /// the internal cycle logic stays untouched for uncontrolled callers.
+  final void Function(int col)? onHeaderSort;
+  final int? controlledSortCol;
+  final WaveSortDir? controlledSortDir;
+
   final bool Function(T item)? isCurrent;
   final bool Function(T item)? isPlaying;
   final bool Function(T item)? isLiked;
@@ -138,6 +147,9 @@ class WaveDesktopTable<T extends Object> extends ConsumerStatefulWidget {
     this.albumSortOf,
     this.durationSortOf,
     this.dateAddedSortOf,
+    this.onHeaderSort,
+    this.controlledSortCol,
+    this.controlledSortDir,
     this.isCurrent,
     this.isPlaying,
     this.isLiked,
@@ -194,9 +206,9 @@ class _WaveDesktopTableState<T extends Object>
 
   List<int> get _order {
     final order = List<int>.generate(widget.items.length, (i) => i);
-    if (_sortCol < 0) return order;
+    if (_activeSortCol < 0) return order;
     Comparable Function(T)? fn;
-    switch (_sortCol) {
+    switch (_activeSortCol) {
       case 0:
         fn = widget.titleSortOf;
       case 1:
@@ -210,7 +222,7 @@ class _WaveDesktopTableState<T extends Object>
     }
     if (fn == null) return order;
     final capture = fn;
-    final dir = _sortDir;
+    final dir = _activeSortDir;
     order.sort((a, b) {
       final c = capture(widget.items[a]).compareTo(
         capture(widget.items[b]) as dynamic,
@@ -220,7 +232,24 @@ class _WaveDesktopTableState<T extends Object>
     return order;
   }
 
+  /// Header sort state — internal cycle fields for uncontrolled
+  /// callers, parent-supplied values when [WaveDesktopTable.onHeaderSort]
+  /// is provided.
+  int get _activeSortCol =>
+      widget.onHeaderSort != null
+          ? (widget.controlledSortCol ?? -1)
+          : _sortCol;
+
+  WaveSortDir get _activeSortDir =>
+      widget.onHeaderSort != null
+          ? (widget.controlledSortDir ?? WaveSortDir.asc)
+          : _sortDir;
+
   void _cycleSort(int col) {
+    if (widget.onHeaderSort != null) {
+      widget.onHeaderSort!(col);
+      return;
+    }
     setState(() {
       if (_sortCol != col) {
         _sortCol = col;
@@ -459,8 +488,8 @@ class _WaveDesktopTableState<T extends Object>
       if (widget.showHeader)
         SliverToBoxAdapter(
           child: _HeaderRow(
-            sortCol: _sortCol,
-            sortDir: _sortDir,
+            sortCol: _activeSortCol,
+            sortDir: _activeSortDir,
             onSort: _cycleSort,
             sortableTitle: widget.titleSortOf != null,
             sortableArtist: widget.artistSortOf != null,
@@ -497,8 +526,8 @@ class _WaveDesktopTableState<T extends Object>
   }) {
     if (widget.showHeader && i == 0) {
       return _HeaderRow(
-        sortCol: _sortCol,
-        sortDir: _sortDir,
+        sortCol: _activeSortCol,
+        sortDir: _activeSortDir,
         onSort: _cycleSort,
         sortableTitle: widget.titleSortOf != null,
         sortableArtist: widget.artistSortOf != null,
