@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/workbydivyanshu/aubade-music-player/releases/latest">
-    <img src="https://img.shields.io/badge/Release-v1.0.0-ffd0b0?style=for-the-badge&labelColor=1a1a1a" alt="Release" />
+    <img src="https://img.shields.io/badge/Release-v1.1.0-ffd0b0?style=for-the-badge&labelColor=1a1a1a" alt="Release" />
   </a>
   <a href="#">
     <img src="https://img.shields.io/badge/Audio-Bit--Perfect%20Lossless-89dceb?style=for-the-badge&labelColor=1a1a1a" alt="Bit-Perfect Lossless" />
@@ -85,11 +85,11 @@ Pre-built binaries for all major desktop operating systems are available on the 
 
 | Platform | Format | How to Install |
 | :--- | :--- | :--- |
-| **Fedora / RHEL / openSUSE** | `.rpm` | `sudo dnf install ./aubade-1.0.0-1.fc44.x86_64.rpm` |
-| **Ubuntu / Debian / Linux Mint** | `.deb` | `sudo apt install ./aubade_1.0.0_amd64.deb` |
-| **Universal Linux (Any Distro)** | `.AppImage` | `chmod +x aubade_1.0.0_x86_64.AppImage && ./aubade_1.0.0_x86_64.AppImage` |
-| **macOS (Apple Silicon)** | `.dmg` | Mount `aubade_1.0.0_macos.dmg` and drag to `Applications` |
-| **Windows 10 / 11** | `.exe` / `.zip` | Run `aubade_1.0.0_windows-x86_64-setup.exe` or extract portable `.zip` |
+| **Fedora / RHEL / openSUSE** | `.rpm` | `sudo dnf install ./aubade_1.1.0_x86_64.rpm` |
+| **Ubuntu / Debian / Linux Mint** | `.deb` | `sudo apt install ./aubade_1.1.0_amd64.deb` |
+| **Universal Linux (Any Distro)** | `.AppImage` | `chmod +x aubade_1.1.0_x86_64.AppImage && ./aubade_1.1.0_x86_64.AppImage` |
+| **macOS (Apple Silicon)** | `.dmg` | Mount `aubade_1.1.0_macos.dmg` and drag to `Applications` |
+| **Windows 10 / 11** | `.exe` / `.zip` | Run `aubade_1.1.0_windows-x86_64-setup.exe` or extract portable `.zip` |
 
 ---
 

@@ -9,7 +9,7 @@ This repo is Aubade. Its source bench is `https://github.com/Clash-Projects/Last
 3. Classify each change as **PORT**, **SKIP**, or **MAYBE**, with a reason and Aubade twin path. A small commit is not automatically relevant. Port only code that solves an Aubade problem or improves an existing Aubade surface. Feature and branding changes may be considered individually when they provide a concrete Aubade benefit. Split mixed commits and adapt only clean, relevant hunks.
 4. Exclude YouTube-related and streaming-related commits. Evaluate other integration, feature, and branding changes individually under step 3. Preserve Aubade identity: never overwrite `lib/features/presence/**`, `lib/features/updater/**`, `lib/features/mpris/**`, `lib/core/app_links.dart`, landing URLs, or `aubade_*` preference keys. Do not copy upstream branding or strings verbatim; adapt any approved branding to Aubade.
 5. Upstream review is not automatic approval. Present the proposed PORT batch and get the user's approval unless they explicitly authorize autonomous porting for that release. A prior release's approval is not blanket approval for future batches.
-6. Port by content on Aubade's **`mainline` branch first**, as one reviewable Aubade commit per approved upstream change. Keep upstream SHAs in internal notes only. Never commit to upstream. Run `flutter analyze --no-fatal-infos`, `flutter test --exclude-tags=live`, relevant platform builds, and the release checks before promoting `mainline` to `main` or tagging a release.
+6. Port by content on Aubade's **`mainline` branch first**, as one reviewable Aubade commit per approved upstream change. Keep upstream SHAs in internal notes only. Never commit to upstream. Run `flutter analyze --no-fatal-infos`, `flutter test --exclude-tags=live`, relevant platform builds, and the release checks (including updating `README.md` release badges and install commands) before promoting `mainline` to `main` or tagging a release.
 7. After shipping or explicitly closing a batch, record its final upstream tip, PORT/SKIP decisions, Aubade commit SHAs, and verification evidence here. Keep unfinished batches marked unfinished.
 
 ## Shipped v1.1.0 release wave
@@ -72,4 +72,15 @@ For this v1.0.9 batch, remaining candidates were skipped under its approved scop
 
 ## Branch and release flow
 
-All Aubade port commits start on `mainline`, never on an upstream branch. Keep them reviewable and tested there. For a release, add the version-prep commit on `mainline`, push and verify CI, then promote the validated release commit to `main` following the active release plan. Tag and publish only after the required gates pass.
+All Aubade port commits start on `mainline`, never on an upstream branch. Keep them reviewable and tested there.
+
+For every release:
+1. **Version prep**: Bump `pubspec.yaml` (version + build number) and update `kFallbackAppVersion` in `lib/features/updater/update_service.dart`.
+2. **README sync**: Update `README.md` on `mainline` so public repository metadata never stays stale:
+   - Update the top release badge (`https://img.shields.io/badge/Release-v<X.Y.Z>-...`).
+   - Update all download and installation filenames/commands in the Downloads table (`.rpm`, `.deb`, `.AppImage`, `.dmg`, `.exe`).
+3. **Validation**: Run `flutter analyze --no-fatal-infos`, `flutter test --exclude-tags=live`, and verify platform builds.
+4. **Push & CI**: Push the version-prep commit on `mainline`, wait for CI to pass on all platforms (Linux, macOS, Windows).
+5. **Promote & Tag**: Fast-forward promote `mainline` to `main`, tag the exact validated commit (`v<X.Y.Z>`), and push the tag.
+6. **Release & Route verification**: Verify all 7 platform release assets are attached with digests, release notes are plain text, and download routes (`/download/{fedora,windows,macos}`) redirect correctly.
+7. **Record shipping evidence**: Update `AGENTS.md` with commit SHAs and test evidence, and file persistent session notes in Palace memory.
