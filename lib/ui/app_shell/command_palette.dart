@@ -8,12 +8,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/track_actions.dart' show formatDuration, playGenerated;
+import '../../core/audio/stream_models.dart' show PlayableTrack;
 import '../../core/storage/prefs.dart';
 import '../../features/feed/feed_repository.dart';
 import '../../features/library/local_library_providers.dart';
 import '../../features/library/local_track.dart';
 import '../../features/search/search_repository.dart';
 import '../components/artwork.dart';
+import '../components/buttons.dart' show LWTooltip;
+import '../components/menus.dart';
 import '../search/search_page.dart';
 import '../theme/tokens.dart';
 import '../theme/wave_icons.dart';
@@ -111,6 +114,7 @@ class _SpotItem {
   final bool circleArt;
   final VoidCallback action;
   final bool isHero;
+  final PlayableTrack? track;
   const _SpotItem({
     required this.group,
     required this.label,
@@ -122,7 +126,60 @@ class _SpotItem {
     this.artLabel = '',
     this.circleArt = false,
     this.isHero = false,
+    this.track,
   });
+}
+
+@visibleForTesting
+List<WaveMenuEntry> spotlightTrackMenuItems({
+  required BuildContext context,
+  required WidgetRef ref,
+  required PlayableTrack track,
+  required VoidCallback closePalette,
+}) {
+  final raw = waveTrackMenuItems(
+    context: context,
+    ref: ref,
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    artworkUrl: track.artworkUrl,
+    videoId: track.videoId,
+    durationSeconds: track.durationSeconds,
+    playable: track,
+  );
+
+  final items = <WaveMenuEntry>[];
+  for (final entry in raw) {
+    if (entry is WaveMenuAction) {
+      final label = entry.label.toLowerCase();
+      // Omit copy-link/title/path actions in Spotlight
+      if (label.contains('copy')) continue;
+
+      // Playback / navigation actions close Spotlight before proceeding
+      if (label == 'play' ||
+          label == 'go to album' ||
+          label == 'go to artist' ||
+          label.contains('file manager')) {
+        items.add(
+          WaveMenuAction(
+            leading: entry.leading,
+            label: entry.label,
+            hint: entry.hint,
+            onPressed: () {
+              closePalette();
+              entry.onPressed?.call();
+            },
+          ),
+        );
+        continue;
+      }
+      items.add(entry);
+    } else {
+      items.add(entry);
+    }
+  }
+  return items;
 }
 
 // Dark acrylic sheet: obsidian with a luminous rim. Pearl takes the
@@ -319,6 +376,26 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
       _moveSelection(rows, -1);
       return KeyEventResult.handled;
     }
+    if (event.logicalKey == LogicalKeyboardKey.contextMenu ||
+        (event.logicalKey == LogicalKeyboardKey.f10 &&
+            HardwareKeyboard.instance.isShiftPressed)) {
+      final i = _selected.clamp(0, rows.length - 1);
+      if (rows.isNotEmpty && rows[i].track != null) {
+        final state = _selKey.currentState;
+        if (state is _SpotRowState) {
+          state.openMenu();
+          return KeyEventResult.handled;
+        } else if (state is _SpotHeroCardState) {
+          state.openMenu();
+          return KeyEventResult.handled;
+        }
+      }
+    }
+    if (event.logicalKey == LogicalKeyboardKey.enter ||
+        event.logicalKey == LogicalKeyboardKey.numpadEnter) {
+      _activate(rows);
+      return KeyEventResult.handled;
+    }
     if (event.logicalKey == LogicalKeyboardKey.escape) {
       Navigator.of(context).pop();
       return KeyEventResult.handled;
@@ -453,6 +530,15 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
     if (q.isNotEmpty) {
       if (localTracks.isNotEmpty) {
         final top = localTracks.first;
+        final topTrack = PlayableTrack(
+          title: top.title,
+          artist: top.artist,
+          album: top.album,
+          durationSeconds: top.duration.inSeconds,
+          playbackUrl: top.path,
+          artworkUrl:
+              top.artworkPath != null ? 'file://${top.artworkPath}' : '',
+        );
         topItem = _SpotItem(
           group: 'Top Result',
           label: top.title,
@@ -465,12 +551,24 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
           artLabel: top.title,
           action: () => _playLocal(top),
           isHero: true,
+          track: topTrack,
         );
       } else if (_liveQ.isNotEmpty &&
           (gSongs.isNotEmpty || gArtists.isNotEmpty || gAlbums.isNotEmpty)) {
         final top = gSongs.isNotEmpty
             ? gSongs.first
             : (gArtists.isNotEmpty ? gArtists.first : gAlbums.first);
+        final isTrack = top.tab == SearchTab.tracks ||
+            (gSongs.isNotEmpty && top == gSongs.first);
+        final topTrack = isTrack
+            ? PlayableTrack(
+                title: top.name,
+                artist: top.artist,
+                album: top.subtitle,
+                videoId: top.entityId,
+                artworkUrl: top.artworkUrl,
+              )
+            : null;
         topItem = _SpotItem(
           group: 'Top Result',
           label: top.name,
@@ -484,6 +582,7 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
           artLabel: top.name,
           action: () => _openResult(top),
           isHero: true,
+          track: topTrack,
         );
       }
     }
@@ -503,6 +602,15 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
           art: t.artworkPath != null ? 'file://${t.artworkPath}' : '',
           artLabel: t.title,
           action: () => _playLocal(t),
+          track: PlayableTrack(
+            title: t.title,
+            artist: t.artist,
+            album: t.album,
+            durationSeconds: t.duration.inSeconds,
+            playbackUrl: t.path,
+            artworkUrl:
+                t.artworkPath != null ? 'file://${t.artworkPath}' : '',
+          ),
         ),
       for (final s in gSongs.take(3))
         _SpotItem(
@@ -513,6 +621,13 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
           art: s.artworkUrl,
           artLabel: s.name,
           action: () => _playSong(s),
+          track: PlayableTrack(
+            title: s.name,
+            artist: s.artist,
+            album: s.subtitle,
+            videoId: s.entityId,
+            artworkUrl: s.artworkUrl,
+          ),
         ),
     ];
 
@@ -672,16 +787,19 @@ class _SpotlightDialogState extends ConsumerState<_SpotlightDialog> {
       }
       Widget row = r.isHero
           ? _SpotHeroCard(
+              key: i == sel ? _selKey : null,
               item: r,
               selected: i == sel,
               onTap: () => _run(r),
+              onClosePalette: () => Navigator.of(context).pop(),
             )
           : _SpotRow(
+              key: i == sel ? _selKey : null,
               item: r,
               selected: i == sel,
               onTap: () => _run(r),
+              onClosePalette: () => Navigator.of(context).pop(),
             );
-      if (i == sel) row = KeyedSubtree(key: _selKey, child: row);
       items.add(row);
     }
     if (rows.isEmpty && onlineLoading) {
@@ -1176,22 +1294,50 @@ class _ShortcutBadge extends StatelessWidget {
 }
 
 /// Elevated Hero Card for the Top Result (Raycast / Apple Music caliber).
-class _SpotHeroCard extends StatefulWidget {
+class _SpotHeroCard extends ConsumerStatefulWidget {
   final _SpotItem item;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback onClosePalette;
   const _SpotHeroCard({
+    super.key,
     required this.item,
     required this.selected,
     required this.onTap,
+    required this.onClosePalette,
   });
 
   @override
-  State<_SpotHeroCard> createState() => _SpotHeroCardState();
+  ConsumerState<_SpotHeroCard> createState() => _SpotHeroCardState();
 }
 
-class _SpotHeroCardState extends State<_SpotHeroCard> {
+class _SpotHeroCardState extends ConsumerState<_SpotHeroCard> {
+  final _menuController = FlyoutController();
   bool _hover = false;
+
+  @override
+  void dispose() {
+    _menuController.dispose();
+    super.dispose();
+  }
+
+  void openMenu() {
+    if (widget.item.track == null) return;
+    final entries = spotlightTrackMenuItems(
+      context: context,
+      ref: ref,
+      track: widget.item.track!,
+      closePalette: widget.onClosePalette,
+    );
+    if (entries.isEmpty) return;
+    _menuController.showFlyout(
+      barrierColor: Colors.transparent,
+      placementMode: FlyoutPlacementMode.auto,
+      transitionDuration: const Duration(milliseconds: 90),
+      transitionBuilder: fastFlyoutTransition,
+      builder: (context) => WaveFlyoutPanel.items(entries: entries),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1199,163 +1345,196 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
     final isSelected = widget.selected;
     final isHovered = _hover;
 
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: isSelected
-                ? _spotlightWash(context, 0.12)
-                : isHovered
-                    ? _spotlightWash(context, 0.08)
-                    : _spotlightWash(context, 0.04),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
+    return FlyoutTarget(
+      controller: _menuController,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onTap,
+          onSecondaryTapDown: r.track != null ? (_) => openMenu() : null,
+          onLongPressStart: r.track != null ? (_) => openMenu() : null,
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
               color: isSelected
-                  ? _spotlightSelect(context).withValues(alpha: 0.40)
-                  : _spotlightWash(context, 0.08),
-              width: 1,
+                  ? _spotlightWash(context, 0.12)
+                  : isHovered
+                      ? _spotlightWash(context, 0.08)
+                      : _spotlightWash(context, 0.04),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: isSelected
+                    ? _spotlightSelect(context).withValues(alpha: 0.40)
+                    : _spotlightWash(context, 0.08),
+                width: 1,
+              ),
+              boxShadow: isSelected
+                  ? [
+                      BoxShadow(
+                        color: Colors.black.withValues(
+                          alpha: _spotlightDark(context) ? 0.35 : 0.10,
+                        ),
+                        blurRadius: 16,
+                        offset: const Offset(0, 4),
+                      ),
+                    ]
+                  : null,
             ),
-            boxShadow: isSelected
-                ? [
-                    BoxShadow(
-                      color: Colors.black.withValues(
-                        alpha: _spotlightDark(context) ? 0.35 : 0.10,
-                      ),
-                      blurRadius: 16,
-                      offset: const Offset(0, 4),
-                    ),
-                  ]
-                : null,
-          ),
-          child: Row(
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: SizedBox(
-                  width: 56,
-                  height: 56,
-                  child: r.art.isNotEmpty
-                      ? (r.circleArt
-                          ? WaveArtwork.circle(
-                              url: r.art, size: 56, label: r.artLabel)
-                          : WaveArtwork(
-                              url: r.art,
-                              size: 56,
-                              radius: 10,
-                              label: r.artLabel,
-                            ))
-                      : Container(
-                          color: _spotlightWash(context, 0.08),
-                          child: Icon(r.icon,
-                              size: 24, color: waveTextSecondary(context)),
-                        ),
+            child: Row(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: SizedBox(
+                    width: 56,
+                    height: 56,
+                    child: r.art.isNotEmpty
+                        ? (r.circleArt
+                            ? WaveArtwork.circle(
+                                url: r.art, size: 56, label: r.artLabel)
+                            : WaveArtwork(
+                                url: r.art,
+                                size: 56,
+                                radius: 10,
+                                label: r.artLabel,
+                              ))
+                        : Container(
+                            color: _spotlightWash(context, 0.08),
+                            child: Icon(r.icon,
+                                size: 24, color: waveTextSecondary(context)),
+                          ),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: _spotlightSelect(context)
-                                .withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            'TOP RESULT',
-                            style: TextStyle(
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: 0.8,
-                              color: _spotlightSelect(context),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: _spotlightSelect(context)
+                                  .withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              'TOP RESULT',
+                              style: TextStyle(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.8,
+                                color: _spotlightSelect(context),
+                              ),
                             ),
                           ),
-                        ),
-                        if (r.meta.isNotEmpty) ...[
-                          const SizedBox(width: 6),
-                          Text(
-                            r.meta,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w500,
-                              color: waveTextTertiary(context),
+                          if (r.meta.isNotEmpty) ...[
+                            const SizedBox(width: 6),
+                            Text(
+                              r.meta,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                                color: waveTextTertiary(context),
+                              ),
                             ),
-                          ),
+                          ],
                         ],
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      r.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: WaveType.trackTitle.copyWith(
-                        fontSize: 14.5,
-                        fontWeight: FontWeight.w600,
-                        color: waveTextPrimary(context),
                       ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      r.sub,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: WaveType.meta.copyWith(
-                        fontSize: 12,
-                        color: waveTextSecondary(context),
+                      const SizedBox(height: 4),
+                      Text(
+                        r.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: WaveType.trackTitle.copyWith(
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w600,
+                          color: waveTextPrimary(context),
+                        ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 2),
+                      Text(
+                        r.sub,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: WaveType.meta.copyWith(
+                          fontSize: 12,
+                          color: waveTextSecondary(context),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Container(
-                height: 34,
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                decoration: BoxDecoration(
-                  color: isSelected
-                      ? _spotlightSelect(context)
-                      : _spotlightWash(context, 0.10),
-                  borderRadius: BorderRadius.circular(17),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      FluentIcons.play,
-                      size: 11,
-                      color: isSelected
-                          ? _spotlightOnSelect(context)
-                          : waveTextPrimary(context),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Play',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
+                const SizedBox(width: 12),
+                Container(
+                  height: 34,
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? _spotlightSelect(context)
+                        : _spotlightWash(context, 0.10),
+                    borderRadius: BorderRadius.circular(17),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        FluentIcons.play,
+                        size: 11,
                         color: isSelected
                             ? _spotlightOnSelect(context)
                             : waveTextPrimary(context),
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 6),
+                      Text(
+                        'Play',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: isSelected
+                              ? _spotlightOnSelect(context)
+                              : waveTextPrimary(context),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+                if (r.track != null) ...[
+                  const SizedBox(width: 8),
+                  LWTooltip(
+                    message: 'More',
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: GestureDetector(
+                        onTap: openMenu,
+                        child: Container(
+                          width: 34,
+                          height: 34,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: _spotlightWash(context, 0.10),
+                            borderRadius: BorderRadius.circular(17),
+                          ),
+                          child: Icon(
+                            WaveIcons.more,
+                            size: 14,
+                            color: isSelected
+                                ? _spotlightSelect(context)
+                                : waveTextPrimary(context),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ),
         ),
       ),
@@ -1366,22 +1545,50 @@ class _SpotHeroCardState extends State<_SpotHeroCard> {
 /// Single Spotlight row: 44px, 30px squircle leading (per-type glyph or
 /// artwork), title + secondary label, left-edge accent pill on selection,
 /// trailing format badge and honest meta.
-class _SpotRow extends StatefulWidget {
+class _SpotRow extends ConsumerStatefulWidget {
   final _SpotItem item;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback onClosePalette;
   const _SpotRow({
+    super.key,
     required this.item,
     required this.selected,
     required this.onTap,
+    required this.onClosePalette,
   });
 
   @override
-  State<_SpotRow> createState() => _SpotRowState();
+  ConsumerState<_SpotRow> createState() => _SpotRowState();
 }
 
-class _SpotRowState extends State<_SpotRow> {
+class _SpotRowState extends ConsumerState<_SpotRow> {
+  final _menuController = FlyoutController();
   bool _hover = false;
+
+  @override
+  void dispose() {
+    _menuController.dispose();
+    super.dispose();
+  }
+
+  void openMenu() {
+    if (widget.item.track == null) return;
+    final entries = spotlightTrackMenuItems(
+      context: context,
+      ref: ref,
+      track: widget.item.track!,
+      closePalette: widget.onClosePalette,
+    );
+    if (entries.isEmpty) return;
+    _menuController.showFlyout(
+      barrierColor: Colors.transparent,
+      placementMode: FlyoutPlacementMode.auto,
+      transitionDuration: const Duration(milliseconds: 90),
+      transitionBuilder: fastFlyoutTransition,
+      builder: (context) => WaveFlyoutPanel.items(entries: entries),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1465,78 +1672,115 @@ class _SpotRowState extends State<_SpotRow> {
       }
     }
 
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: WaveMotion.fast,
-          height: 44,
-          padding: const EdgeInsets.only(right: 14),
-          decoration: BoxDecoration(
-            color: isSelected
-                ? _spotlightWash(context, 0.10)
-                : isHovered
-                    ? _spotlightWash(context, 0.06)
-                    : Colors.transparent,
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 3,
-                height: 22,
-                decoration: BoxDecoration(
-                  color: isSelected
-                      ? _spotlightSelect(context)
+    return FlyoutTarget(
+      controller: _menuController,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onTap,
+          onSecondaryTapDown: r.track != null ? (_) => openMenu() : null,
+          onLongPressStart: r.track != null ? (_) => openMenu() : null,
+          child: AnimatedContainer(
+            duration: WaveMotion.fast,
+            height: 44,
+            padding: const EdgeInsets.only(right: 14),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? _spotlightWash(context, 0.10)
+                  : isHovered
+                      ? _spotlightWash(context, 0.06)
                       : Colors.transparent,
-                  borderRadius: const BorderRadius.only(
-                    topRight: Radius.circular(2),
-                    bottomRight: Radius.circular(2),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 3,
+                  height: 22,
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? _spotlightSelect(context)
+                        : Colors.transparent,
+                    borderRadius: const BorderRadius.only(
+                      topRight: Radius.circular(2),
+                      bottomRight: Radius.circular(2),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 11),
-              SizedBox(width: 30, height: 30, child: leading),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      r.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: WaveType.trackTitle.copyWith(
-                        fontSize: 13,
-                        fontWeight:
-                            isSelected ? FontWeight.w600 : FontWeight.w500,
-                        color: waveTextPrimary(context),
-                      ),
-                    ),
-                    if (r.sub.isNotEmpty)
+                const SizedBox(width: 11),
+                SizedBox(width: 30, height: 30, child: leading),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       Text(
-                        r.sub,
+                        r.label,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          color: isSelected
-                              ? waveTextSecondary(context)
-                              : waveTextTertiary(context),
+                        style: WaveType.trackTitle.copyWith(
+                          fontSize: 13,
+                          fontWeight:
+                              isSelected ? FontWeight.w600 : FontWeight.w500,
+                          color: waveTextPrimary(context),
                         ),
                       ),
-                  ],
+                      if (r.sub.isNotEmpty)
+                        Text(
+                          r.sub,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: isSelected
+                                ? waveTextSecondary(context)
+                                : waveTextTertiary(context),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-              if (metaWidget != null) ...[
-                const SizedBox(width: 8),
-                metaWidget,
+                if (metaWidget != null) ...[
+                  const SizedBox(width: 8),
+                  metaWidget,
+                ],
+                if (r.track != null) ...[
+                  const SizedBox(width: 6),
+                  SizedBox(
+                    width: 28,
+                    child: (isHovered || isSelected)
+                        ? LWTooltip(
+                            message: 'More',
+                            child: MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              child: GestureDetector(
+                                onTap: openMenu,
+                                child: Container(
+                                  width: 28,
+                                  height: 28,
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    color: _spotlightWash(context, 0.08),
+                                    borderRadius: BorderRadius.circular(
+                                        WaveRadius.controls),
+                                  ),
+                                  child: Icon(
+                                    WaveIcons.more,
+                                    size: 13,
+                                    color: waveTextSecondary(context),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
