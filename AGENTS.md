@@ -12,6 +12,24 @@ This repo is Aubade. Its source bench is `https://github.com/Clash-Projects/Last
 6. Port by content on Aubade's **`mainline` branch first**, as one reviewable Aubade commit per approved upstream change. Keep upstream SHAs in internal notes only. Never commit to upstream. Run `flutter analyze --no-fatal-infos`, `flutter test --exclude-tags=live`, relevant platform builds, and the release checks (including updating `README.md` release badges and install commands) before promoting `mainline` to `main` or tagging a release.
 7. After shipping or explicitly closing a batch, record its final upstream tip, PORT/SKIP decisions, Aubade commit SHAs, and verification evidence here. Keep unfinished batches marked unfinished.
 
+## Shipped v1.1.1 release wave
+
+The v1.1.1 full release wave (Waves 1–6) was implemented via clean-room adaptation on `mainline`:
+
+| Feature | Aubade commit | Implementation Summary |
+|---|---|---|
+| Pure-Dart metadata fallback & live folder watcher | `94ad3a5` | Pure-Dart metadata fallback parser, STREAMINFO container duration, live directory watcher |
+| Interactive Linux window resizing, route safety & media keys | `86b4937` | 8-handle interactive Linux window resize, route change audio safety & hardware volume restore, native SMTC/macOS NowPlaying |
+| 1-click Performance Mode, Skia optimizations & memory hygiene | `edb0f94` | 1-click Performance Mode (opaque solid surfaces, visualizer off, aura skip), 128MB imageCache budget, 45s working-set trim & Windows SetProcessWorkingSetSize |
+| Zero-allocation GPU lyrics & spatial duet layout | `65f90bb` | Single-pass GPU canvas painter, ParagraphLayoutCache, 5 kinetic styles (Classic, Glow, Dynamic, Smooth, Minimal), instrumental break countdown, spatial duet staging & TTML agent |
+| Multi-service scrobbling & durable queues | `aba1a97` | ListenBrainz token + custom server, Libre.fm session + custom GNU FM URL, durable SQLite per-service offline queues (v11 schema), Vault lifetime listen strips |
+| Now Playing player styles & smoked glass menus | `b6f964c` | Full Bleed (default) and Minimal player styles, NowPlayingStylePicker preview cards in Settings > Appearance, neutral smoked glass menus (`#141418` / `#F5F5F7`) |
+| Version bump & release prep | `v1.1.1` | Bump `pubspec.yaml` to `1.1.1+1`, `kFallbackAppVersion` to `'1.1.1'`, `README.md` download links and release badge |
+
+Verification on the complete v1.1.1 tree:
+- `flutter analyze --no-fatal-infos`: 0 issues found.
+- `flutter test --exclude-tags=live`: 751 tests passed, 8 skipped.
+
 ## Shipped v1.1.0 release wave
 
 The user approved six feature behaviors + full accessibility citizenship for the v1.1.0 wave.
