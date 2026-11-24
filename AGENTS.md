@@ -12,6 +12,15 @@ This repo is Aubade. Its source bench is `https://github.com/Clash-Projects/Last
 6. Port by content on Aubade's **`mainline` branch first**, as one reviewable Aubade commit per approved upstream change. Keep upstream SHAs in internal notes only. Never commit to upstream. Run `flutter analyze --no-fatal-infos`, `flutter test --exclude-tags=live`, relevant platform builds, and the release checks (including updating `README.md` release badges and install commands) before promoting `mainline` to `main` or tagging a release.
 7. After shipping or explicitly closing a batch, record its final upstream tip, PORT/SKIP decisions, Aubade commit SHAs, and verification evidence here. Keep unfinished batches marked unfinished.
 
+## Shipped v1.1.2 hotfix wave
+
+The v1.1.2 hotfix resolves Linux Wayland launch surface synchronization and pointer input grab:
+
+| Fix | Aubade commit | Implementation Summary |
+|---|---|---|
+| Native runner launch size & resize grab guard | `0a330c6` | Set default GTK window size to 1360x860 in `my_application.cc`, remove mid-flight startup `size`/`center` from `window.dart` to prevent Wayland OpenGL frame timeout and pointer drop; restrict `WaveWindowResizeArea` to `onPanStart` (drag only) and mount inside router `builder` |
+| Version bump & release prep | `v1.1.2` | Bump `pubspec.yaml` to `1.1.2+1`, `kFallbackAppVersion` to `'1.1.2'`, `README.md` download links and release badge |
+
 ## Shipped v1.1.1 release wave
 
 The v1.1.1 full release wave (Waves 1–6) was implemented via clean-room adaptation on `mainline`:
