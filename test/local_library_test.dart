@@ -28,11 +28,13 @@ class _NoNetworkLyricsRepository extends LyricsRepository {
   }
 }
 
-/// Canonical 44-byte PCM WAV header: RIFF → fmt (16 bytes) → empty data.
+/// Canonical PCM WAV header: RIFF → fmt (16 bytes) → data (declared
+/// size only; the reader never touches the samples themselves).
 List<int> _wavFixture({
   int channels = 2,
   int sampleRate = 96000,
   int bits = 24,
+  int dataBytes = 96000 * 2 * 3, // one second
 }) {
   final byteRate = sampleRate * channels * (bits ~/ 8);
   final blockAlign = channels * (bits ~/ 8);
@@ -55,7 +57,10 @@ List<int> _wavFixture({
     blockAlign & 0xFF, (blockAlign >> 8) & 0xFF,
     bits & 0xFF, (bits >> 8) & 0xFF,
     0x64, 0x61, 0x74, 0x61, // 'data'
-    0x00, 0x00, 0x00, 0x00, // 0 samples
+    dataBytes & 0xFF,
+    (dataBytes >> 8) & 0xFF,
+    (dataBytes >> 16) & 0xFF,
+    (dataBytes >> 24) & 0xFF,
   ];
 }
 
@@ -1463,6 +1468,8 @@ void main() {
         expect(props.sampleRate, 96000);
         expect(props.channels, 2);
         expect(props.bitDepth, 24);
+        expect(props.durationMs, 1000,
+            reason: 'data bytes ÷ byte rate gives the true length');
       } finally {
         dir.deleteSync(recursive: true);
       }
@@ -1479,6 +1486,8 @@ void main() {
             reason: '20-bit rate from bytes 18-20');
         expect(props.channels, 2, reason: '3-bit channels-1');
         expect(props.bitDepth, 24, reason: '5-bit depth-1 spans 20-21');
+        expect(props.durationMs, 120000,
+            reason: '11,520,000 samples ÷ 96,000 Hz');
       } finally {
         dir.deleteSync(recursive: true);
       }

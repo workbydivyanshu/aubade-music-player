@@ -719,6 +719,23 @@ class AppDatabase {
     }
   }
 
+  /// Paths whose stored metadata is visibly degraded — the signature of
+  /// the old audiotags panic path. Used for a one-shot re-read after the
+  /// pure-Dart fallback scanner lands.
+  Set<String> getLocalTrackPathsNeedingMetadataRepair() {
+    try {
+      final rows = _db.select(
+        'SELECT path FROM local_tracks '
+        "WHERE artist = 'Unknown Artist' "
+        "OR album = 'Unknown Album' "
+        'OR duration_ms <= 0;',
+      );
+      return {for (final r in rows) r['path'] as String};
+    } catch (_) {
+      return const {};
+    }
+  }
+
   /// LIKE-pattern escape so user input containing `%`, `_` or `\`
   /// matches literally instead of acting as wildcards.
   static String _likeEscape(String s) => s

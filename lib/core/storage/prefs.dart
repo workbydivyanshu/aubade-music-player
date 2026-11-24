@@ -400,6 +400,14 @@ class Prefs {
   Future<void> markStreamPropsBackfilled() =>
       _sp.setBool('aubade_streamprops_backfilled', true);
 
+  /// One-shot flag: rows that previously degraded to `Unknown Artist` /
+  /// `Unknown Album` / zero duration were re-read with the pure-Dart
+  /// fallback scanner.
+  bool get libraryMetadataRepaired =>
+      _sp.getBool('aubade_library_metadata_repaired') ?? false;
+  Future<void> markLibraryMetadataRepaired() =>
+      _sp.setBool('aubade_library_metadata_repaired', true);
+
   bool get downloadLyrics => _sp.getBool('aubade_download_lyrics') ?? true;
   Future<void> setDownloadLyrics(bool v) =>
       _sp.setBool('aubade_download_lyrics', v);

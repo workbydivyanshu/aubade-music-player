@@ -29,6 +29,7 @@ class StreamProps {
     this.sampleRate = 0,
     this.bitDepth = 0,
     this.channels = 0,
+    this.durationMs = 0,
   });
 
   /// Sample rate in Hz, or 0 when unknown.
@@ -40,15 +41,19 @@ class StreamProps {
   /// Channel count, or 0 when unknown.
   final int channels;
 
+  /// Container-declared duration in milliseconds, or 0 when the
+  /// container does not expose a trustworthy length.
+  final int durationMs;
+
   static const StreamProps unknown = StreamProps();
 }
 
 /// Reads [path]'s first header bytes and decodes stream properties.
 ///
 /// Synchronous and bounded: a 64-byte sniff for every container, plus a
-/// second sequential read for MP3 (4 KiB frame scan) and M4A (top-level
-/// box walk to `moov`). Never throws; unreadable or unrecognized files
-/// return [StreamProps.unknown].
+/// second sequential read for MP3 (4 KiB frame scan), a chunk-table seek
+/// for WAV, and a top-level box walk for M4A. Never throws; unreadable
+/// or unrecognized files return [StreamProps.unknown].
 StreamProps readStreamPropsSync(String path) {
   RandomAccessFile? file;
   try {
@@ -58,7 +63,7 @@ StreamProps readStreamPropsSync(String path) {
 
     if (_magic(head, 0, 'fLaC')) return _decodeFlac(head);
     if (_magic(head, 0, 'RIFF') && _magic(head, 8, 'WAVE')) {
-      return _decodeWav(head);
+      return _decodeWav(file);
     }
     if (_magic(head, 0, 'OggS')) return _decodeOgg(head);
     if (_magic(head, 0, 'ID3') || head[0] == 0xFF) {
@@ -83,7 +88,12 @@ StreamProps readStreamPropsSync(String path) {
 
 /// Builds a plausible result: channels and sample rate must be sane
 /// (8 kHz..768 kHz), anything else degrades to [StreamProps.unknown].
-StreamProps _props(int sampleRate, int bitDepth, int channels) {
+StreamProps _props(
+  int sampleRate,
+  int bitDepth,
+  int channels, {
+  int durationMs = 0,
+}) {
   if (sampleRate < 8000 || sampleRate > 768000 || channels <= 0) {
     return StreamProps.unknown;
   }
@@ -91,6 +101,7 @@ StreamProps _props(int sampleRate, int bitDepth, int channels) {
     sampleRate: sampleRate,
     bitDepth: bitDepth,
     channels: channels,
+    durationMs: durationMs,
   );
 }
 
@@ -106,31 +117,62 @@ StreamProps _decodeFlac(Uint8List b) {
   final rate = (b[18] << 12) | (b[19] << 4) | (b[20] >> 4);
   final channels = ((b[20] >> 1) & 0x07) + 1;
   final depth = (((b[20] & 0x01) << 4) | (b[21] >> 4)) + 1;
-  return _props(rate, depth, channels);
+  final totalSamples =
+      ((b[21] & 0x0F) << 32) |
+      (b[22] << 24) |
+      (b[23] << 16) |
+      (b[24] << 8) |
+      b[25];
+  final durationMs = rate > 0 ? (totalSamples * 1000) ~/ rate : 0;
+  return _props(rate, depth, channels, durationMs: durationMs);
 }
 
-/// WAV (`RIFF`/`WAVE`): walk the chunk table for `fmt ` (usually at
-/// offset 12) and read the PCM fields — channels (payload +2), sample
-/// rate (+4), bits per sample (+14). Needs a ≥16-byte fmt chunk.
-StreamProps _decodeWav(Uint8List b) {
+/// WAV (`RIFF`/`WAVE`): walk the chunk table for `fmt ` (PCM fields) and
+/// `data` (payload size). Duration is `data / byteRate`, both exactly as
+/// the file declares. Chunk walking seeks instead of buffering the file,
+/// so a multi-hundred-MB WAV costs a handful of tiny reads.
+StreamProps _decodeWav(RandomAccessFile file) {
+  final total = file.lengthSync();
   var off = 12;
-  while (off + 8 <= b.length) {
-    final isFmt = b[off] == 0x66 &&
-        b[off + 1] == 0x6D &&
-        b[off + 2] == 0x74 &&
-        b[off + 3] == 0x20;
-    final size = _le32(b, off + 4);
+  var channels = 0;
+  var rate = 0;
+  var depth = 0;
+  var byteRate = 0;
+  var dataSize = -1;
+
+  while (off + 8 <= total) {
+    file.setPositionSync(off);
+    final hdr = file.readSync(8);
+    if (hdr.length < 8) break;
+    final isFmt =
+        hdr[0] == 0x66 && hdr[1] == 0x6D && hdr[2] == 0x74 && hdr[3] == 0x20;
+    final isData =
+        hdr[0] == 0x64 && hdr[1] == 0x61 && hdr[2] == 0x74 && hdr[3] == 0x61;
+    final size = _le32(hdr, 4);
+    if (size < 0) break;
+
     if (isFmt) {
-      if (size < 16 || off + 24 > b.length) return StreamProps.unknown;
-      final channels = _le16(b, off + 10);
-      final rate = _le32(b, off + 12);
-      final depth = _le16(b, off + 22);
-      return _props(rate, depth, channels);
+      if (size < 16) return StreamProps.unknown;
+      final payload = file.readSync(size > 40 ? 40 : size);
+      if (payload.length < 16) return StreamProps.unknown;
+      channels = _le16(payload, 2);
+      rate = _le32(payload, 4);
+      byteRate = _le32(payload, 8);
+      depth = _le16(payload, 14);
+    } else if (isData) {
+      dataSize = size;
+      // `fmt ` always precedes `data` in valid RIFF; once both are known
+      // there is nothing else this header can contribute.
+      if (byteRate > 0) break;
     }
-    if (size <= 0) break;
-    off += 8 + size;
+
+    off += 8 + size + (size & 1); // RIFF chunks are word-aligned.
   }
-  return StreamProps.unknown;
+
+  final durationMs = byteRate > 0 && dataSize > 0
+      ? (dataSize * 1000) ~/ byteRate
+      : 0;
+  return _props(rate, depth, channels, durationMs: durationMs);
 }
 
 /// OGG: first page body carries either an OpusHead or a Vorbis

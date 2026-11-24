@@ -16,12 +16,14 @@
 library;
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:audiotags/audiotags.dart';
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'audio_metadata_fallback.dart';
 import 'local_track.dart';
 import 'stream_props.dart';
 
@@ -56,6 +58,14 @@ typedef ScanBatchCallback = void Function(List<LocalTrack> batch, int totalSoFar
 /// Callback for track progress counter.
 typedef ScanProgressCallback = void Function(int totalSoFar);
 
+/// Embedded picture bytes plus the MIME type that produced them.
+class _EmbeddedPicture {
+  const _EmbeddedPicture(this.bytes, this.mimeType);
+
+  final Uint8List bytes;
+  final String mimeType;
+}
+
 /// Scan [folders] recursively and return one [LocalTrack] per audio file,
 /// sorted by path, with perfect dedupe (each path yielded once even when
 /// folders overlap or run through the concurrent pool).
@@ -71,6 +81,13 @@ typedef ScanProgressCallback = void Function(int totalSoFar);
 ///
 /// When [alivePaths] is supplied, every discovered audio path (skipped or
 /// not) is added to it so callers can prune rows for vanished files.
+///
+/// [artCacheDirOverride] lets tests/tools redirect extracted artwork away
+/// from the platform cache directory; production callers leave it null.
+///
+/// [forceRescanPaths] re-reads files whose mtime still matches the row —
+/// used to repair rows written by a buggy tag reader without forcing a
+/// whole-library re-read.
 Future<List<LocalTrack>> scanFolders(
   Iterable<String> folders, {
   ScanBatchCallback? onBatch,
@@ -78,20 +95,25 @@ Future<List<LocalTrack>> scanFolders(
   int batchSize = 50,
   Map<String, int>? existingTimestamps,
   Set<String>? alivePaths,
+  Set<String>? forceRescanPaths,
+  Directory? artCacheDirOverride,
 }) async {
   final tracks = <LocalTrack>[];
   final seen = <String>{};
   final companionCache = <String, String?>{};
+  final artworkCache = <String, Future<String?>>{};
   final currentBatch = <LocalTrack>[];
 
-  Directory? artCacheDir;
-  try {
-    final cacheRoot = await getApplicationCacheDirectory();
-    artCacheDir = Directory(p.join(cacheRoot.path, _artCacheDirName));
-    if (!artCacheDir.existsSync()) {
-      artCacheDir.createSync(recursive: true);
-    }
-  } catch (_) {}
+  var artCacheDir = artCacheDirOverride;
+  if (artCacheDir == null) {
+    try {
+      final cacheRoot = await getApplicationCacheDirectory();
+      artCacheDir = Directory(p.join(cacheRoot.path, _artCacheDirName));
+      if (!artCacheDir.existsSync()) {
+        artCacheDir.createSync(recursive: true);
+      }
+    } catch (_) {}
+  }
 
   final hasTimestamps =
       existingTimestamps != null && existingTimestamps.isNotEmpty;
@@ -117,7 +139,11 @@ Future<List<LocalTrack>> scanFolders(
         } catch (_) {
           continue; // Unreadable file: drop the candidate silently.
         }
-        if (existingTimestamps[file.path] == mtimeMillis) continue;
+        if (existingTimestamps[file.path] == mtimeMillis &&
+            (forceRescanPaths == null ||
+                !forceRescanPaths.contains(file.path))) {
+          continue;
+        }
       }
       toScan.add(file);
     }
@@ -127,20 +153,25 @@ Future<List<LocalTrack>> scanFolders(
     // sequencing stays deterministic.
     for (var start = 0; start < toScan.length; start += _scanConcurrency) {
       final end = start + _scanConcurrency;
-      final chunk =
-          toScan.sublist(start, end > toScan.length ? toScan.length : end);
-      final scanned = await Future.wait(chunk.map((file) async {
-        try {
-          return await _scanFile(
-            file,
-            companionCache: companionCache,
-            artCacheDir: artCacheDir,
-          );
-        } catch (_) {
-          // Skip corrupt or unreadable audio file without failing the scan.
-          return null;
-        }
-      }));
+      final chunk = toScan.sublist(
+        start,
+        end > toScan.length ? toScan.length : end,
+      );
+      final scanned = await Future.wait(
+        chunk.map((file) async {
+          try {
+            return await _scanFile(
+              file,
+              companionCache: companionCache,
+              artworkCache: artworkCache,
+              artCacheDir: artCacheDir,
+            );
+          } catch (_) {
+            // Skip corrupt or unreadable audio file without failing the scan.
+            return null;
+          }
+        }),
+      );
       for (final track in scanned) {
         if (track == null) continue;
         tracks.add(track);
@@ -192,6 +223,7 @@ Future<List<File>> _discoverFiles(Directory dir, Set<String> seen) async {
 Future<LocalTrack> _scanFile(
   File file, {
   required Map<String, String?> companionCache,
+  required Map<String, Future<String?>> artworkCache,
   Directory? artCacheDir,
 }) async {
   final path = file.path;
@@ -212,22 +244,48 @@ Future<LocalTrack> _scanFile(
   try {
     tag = await AudioTags.read(path);
   } catch (_) {
-    tag = null; // Tauon-style tolerance: unreadable tags fall back below.
+    tag = null; // audiotags' Rust bridge can panic on bad numeric tags.
   }
 
-  final title = tag?.title ?? p.basenameWithoutExtension(path);
-  final artist = tag?.trackArtist ?? 'Unknown Artist';
-  final album = tag?.album ?? 'Unknown Album';
-  // audiotags returns `duration` as seconds (Rust core:
-  // `file.properties().duration().as_secs()`), not milliseconds.
-  final duration =
-      tag != null ? Duration(seconds: tag.duration ?? 0) : Duration.zero;
+  // The audiotags bridge panics on values like `bpm=null`, which the
+  // catch above turns into "no tags at all". Recover every field with
+  // the pure-Dart container reader before degrading to filenames.
+  AudioMetadata? fallback;
+  if (_tagsAreUnusable(tag)) {
+    try {
+      fallback = await readAudioMetadataFallback(path);
+    } catch (_) {
+      fallback = null;
+    }
+  }
+
+  final fileMeta = parseTrackFilename(p.basenameWithoutExtension(path));
+  final folderMeta = inferFolderMetadata(path);
+
+  final title =
+      _firstText([tag?.title, fallback?.title]) ??
+      (fileMeta.title.isEmpty
+          ? p.basenameWithoutExtension(path)
+          : fileMeta.title);
+  final folderArtist = folderMeta.artist;
+  final folderAlbum = folderMeta.album;
+  final artist =
+      _firstText([tag?.trackArtist, fallback?.artist, folderArtist]) ??
+      'Unknown Artist';
+  final album =
+      _firstText([tag?.album, fallback?.album, folderAlbum]) ?? 'Unknown Album';
+  final albumArtist =
+      _firstText([tag?.albumArtist, fallback?.albumArtist, folderArtist]) ?? '';
+  final duration = _resolveDuration(tag, fallback, props);
   final durationMs = duration.inMilliseconds;
-  final hasEmbeddedArt = (tag?.pictures.isNotEmpty) ?? false;
+  final embedded = _selectEmbeddedPicture(tag, fallback);
   final artworkPath = await _resolveArtwork(
     file,
-    tag,
+    embedded,
+    album: album,
+    artist: artist,
     companionCache: companionCache,
+    artworkCache: artworkCache,
     artCacheDir: artCacheDir,
   );
 
@@ -236,11 +294,12 @@ Future<LocalTrack> _scanFile(
     title: title,
     artist: artist,
     album: album,
-    albumArtist: tag?.albumArtist ?? '',
-    trackNumber: tag?.trackNumber,
-    discNumber: tag?.discNumber,
-    year: tag?.year,
-    genre: tag?.genre,
+    albumArtist: albumArtist,
+    trackNumber:
+        tag?.trackNumber ?? fallback?.trackNumber ?? fileMeta.trackNumber,
+    discNumber: tag?.discNumber ?? fallback?.discNumber,
+    year: tag?.year ?? fallback?.year,
+    genre: _firstText([tag?.genre, fallback?.genre]),
     duration: duration,
     // audiotags 1.4.x does not expose stream properties; the header
     // sniff supplies them, and the average bitrate falls out of
@@ -253,19 +312,100 @@ Future<LocalTrack> _scanFile(
     sizeBytes: sizeBytes,
     format: format,
     artworkPath: artworkPath,
-    hasEmbeddedArt: hasEmbeddedArt,
+    hasEmbeddedArt: embedded != null,
     modifiedAt: modifiedAt,
   );
 }
 
+/// True when [tag] carries nothing worth keeping. Artwork counts: a
+/// null/empty tag with pictures can still drive the UI.
+bool _tagsAreUnusable(Tag? tag) {
+  if (tag == null) return true;
+  return _isBlank(tag.title) &&
+      _isBlank(tag.trackArtist) &&
+      _isBlank(tag.album) &&
+      _isBlank(tag.albumArtist) &&
+      _isBlank(tag.genre) &&
+      tag.pictures.isEmpty;
+}
+
+bool _isBlank(String? value) => value == null || value.trim().isEmpty;
+
+/// First non-blank value in priority order.
+String? _firstText(Iterable<String?> values) {
+  for (final value in values) {
+    if (value == null) continue;
+    final trimmed = value.trim();
+    if (trimmed.isNotEmpty) return trimmed;
+  }
+  return null;
+}
+
+/// Tag duration (whole seconds) wins; then the container's exact
+/// duration; then the stream header. Never returns a guessed value.
+Duration _resolveDuration(
+  Tag? tag,
+  AudioMetadata? fallback,
+  StreamProps props,
+) {
+  final seconds = tag?.duration ?? 0;
+  if (seconds > 0) return Duration(seconds: seconds);
+  final fallbackMs = fallback?.duration.inMilliseconds ?? 0;
+  if (fallbackMs > 0) return Duration(milliseconds: fallbackMs);
+  if (props.durationMs > 0) {
+    return Duration(milliseconds: props.durationMs);
+  }
+  return Duration.zero;
+}
+
+/// Prefers the audiotags picture (front cover first), then the pure-Dart
+/// fallback picture. MIME drives the cache-file extension.
+_EmbeddedPicture? _selectEmbeddedPicture(Tag? tag, AudioMetadata? fallback) {
+  final pictures = tag?.pictures;
+  if (pictures != null && pictures.isNotEmpty) {
+    final picture = pictures.firstWhere(
+      (candidate) => candidate.pictureType == PictureType.coverFront,
+      orElse: () => pictures.first,
+    );
+    return _EmbeddedPicture(picture.bytes, _mimeName(picture.mimeType));
+  }
+  final bytes = fallback?.picture;
+  if (bytes != null && bytes.isNotEmpty) {
+    return _EmbeddedPicture(bytes, fallback?.pictureMimeType ?? 'image/jpeg');
+  }
+  return null;
+}
+
+String _mimeName(MimeType? mime) {
+  switch (mime) {
+    case MimeType.png:
+      return 'image/png';
+    case MimeType.tiff:
+      return 'image/tiff';
+    case MimeType.bmp:
+      return 'image/bmp';
+    case MimeType.gif:
+      return 'image/gif';
+    case MimeType.jpeg:
+    case null:
+      return 'image/jpeg';
+  }
+}
+
 /// Resolves artwork for [file]. A companion image next to the file wins;
 /// otherwise the first embedded picture is extracted and cached under the
-/// app cache dir (`aubade_art/<sha256>.jpg`).
-/// Companion lookup is cached per-directory for O(1) checks.
+/// app cache dir (`aubade_art/<sha256>.<ext>`).
+///
+/// Companion lookup is cached per-directory for O(1) checks. Embedded
+/// extraction is deduplicated per `directory|album|artist` — a 20-track
+/// album reads and hashes its shared cover once, not 20 times.
 Future<String?> _resolveArtwork(
   File file,
-  Tag? tag, {
+  _EmbeddedPicture? embedded, {
+  required String album,
+  required String artist,
   required Map<String, String?> companionCache,
+  required Map<String, Future<String?>> artworkCache,
   Directory? artCacheDir,
 }) async {
   final parentDir = p.dirname(file.path);
@@ -287,28 +427,48 @@ Future<String?> _resolveArtwork(
     if (found != null) return found;
   }
 
-  // 2. Extract an embedded picture and cache it by content hash.
-  final pictures = tag?.pictures;
-  if (pictures == null || pictures.isEmpty) return null;
+  // 2. Extract an embedded picture, deduped per album surface.
+  if (embedded == null || embedded.bytes.isEmpty) return null;
+  final key =
+      '${parentDir.toLowerCase()}|'
+      '${album.trim().toLowerCase()}|'
+      '${artist.trim().toLowerCase()}';
+  final pending = artworkCache[key];
+  if (pending != null) return pending;
+  final future = _cacheEmbeddedArtwork(embedded, artCacheDir);
+  artworkCache[key] = future;
+  return future;
+}
 
-  final bytes = pictures.first.bytes;
-  final hash = sha256.convert(bytes).toString();
-
-  final cacheDir = artCacheDir ??
-      Directory(
-        p.join((await getApplicationCacheDirectory()).path, _artCacheDirName),
-      );
+Future<String?> _cacheEmbeddedArtwork(
+  _EmbeddedPicture picture,
+  Directory? artCacheDir,
+) async {
   try {
-    if (!cacheDir.existsSync()) {
-      cacheDir.createSync(recursive: true);
-    }
-  } catch (_) {}
+    final hash = sha256.convert(picture.bytes).toString();
+    final extension = picture.mimeType.toLowerCase().contains('png')
+        ? 'png'
+        : 'jpg';
 
-  final cacheFile = File(p.join(cacheDir.path, '$hash.jpg'));
-  if (!cacheFile.existsSync()) {
+    final cacheDir =
+        artCacheDir ??
+        Directory(
+          p.join((await getApplicationCacheDirectory()).path, _artCacheDirName),
+        );
     try {
-      await cacheFile.writeAsBytes(bytes, flush: false);
+      if (!cacheDir.existsSync()) {
+        cacheDir.createSync(recursive: true);
+      }
     } catch (_) {}
+
+    final cacheFile = File(p.join(cacheDir.path, '$hash.$extension'));
+    if (!cacheFile.existsSync()) {
+      try {
+        await cacheFile.writeAsBytes(picture.bytes, flush: false);
+      } catch (_) {}
+    }
+    return cacheFile.path;
+  } catch (_) {
+    return null;
   }
-  return cacheFile.path;
 }
