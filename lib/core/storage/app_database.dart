@@ -21,7 +21,7 @@ import '../../features/library/vault_analytics.dart';
 /// Migrations are additive and never drop user data (no destructive
 /// fallback, unlike the temporary Android `fallbackToDestructiveMigration`).
 class AppDatabase {
-  static const int schemaVersion = 10;
+  static const int schemaVersion = 11;
 
   final Database _db;
 
@@ -146,6 +146,19 @@ class AppDatabase {
             'ALTER TABLE local_tracks ADD COLUMN size_bytes INTEGER;');
       } catch (_) {}
       _db.execute('PRAGMA user_version=10;');
+    }
+    if (version < 11) {
+      // v11: durable per-service offline scrobbles (lastfm, listenbrainz, librefm).
+      try {
+        _db.execute(
+            "ALTER TABLE offline_scrobbles ADD COLUMN service TEXT NOT NULL DEFAULT 'lastfm';");
+      } catch (_) {}
+      try {
+        _db.execute(
+            'CREATE INDEX IF NOT EXISTS idx_offline_scrobbles_service '
+            'ON offline_scrobbles(service, created_at);');
+      } catch (_) {}
+      _db.execute('PRAGMA user_version=11;');
     }
   }
 
@@ -473,6 +486,7 @@ class AppDatabase {
     _db.execute('''
       CREATE TABLE IF NOT EXISTS offline_scrobbles (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        service TEXT NOT NULL DEFAULT 'lastfm',
         artist TEXT NOT NULL,
         track TEXT NOT NULL,
         album TEXT NOT NULL DEFAULT '',
@@ -486,6 +500,10 @@ class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_offline_scrobbles_created
       ON offline_scrobbles(created_at);
     ''');
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_offline_scrobbles_service
+      ON offline_scrobbles(service, created_at);
+    ''');
   }
 
   // -- offline scrobble queue ----------------------------------------------
@@ -493,6 +511,7 @@ class AppDatabase {
   /// Append one listened track to the offline queue ([timestamp] is the
   /// playback-start epoch second, UTC). Rows drain oldest-first.
   void insertOfflineScrobble({
+    String service = 'lastfm',
     required String artist,
     required String track,
     String album = '',
@@ -502,10 +521,11 @@ class AppDatabase {
   }) {
     try {
       _db.execute(
-        'INSERT INTO offline_scrobbles(artist, track, album, '
+        'INSERT INTO offline_scrobbles(service, artist, track, album, '
         'album_artist, timestamp, duration, created_at) '
-        'VALUES(?, ?, ?, ?, ?, ?, ?);',
+        'VALUES(?, ?, ?, ?, ?, ?, ?, ?);',
         [
+          service,
           artist,
           track,
           album,
@@ -518,15 +538,19 @@ class AppDatabase {
     } catch (_) {}
   }
 
-  /// Oldest [limit] queued scrobbles in submission order (`created_at`,
-  /// then `id` to break same-millisecond ties).
-  List<Map<String, dynamic>> getPendingOfflineScrobbles({int limit = 50}) {
+  /// Oldest [limit] queued scrobbles for [service] in submission order
+  /// (`created_at`, then `id` to break same-millisecond ties).
+  List<Map<String, dynamic>> getPendingOfflineScrobbles({
+    String service = 'lastfm',
+    int limit = 50,
+  }) {
     try {
       return _db
           .select(
             'SELECT * FROM offline_scrobbles '
+            'WHERE service = ? '
             'ORDER BY created_at ASC, id ASC LIMIT ?;',
-            [limit],
+            [service, limit],
           )
           .map(Map<String, dynamic>.from)
           .toList();
@@ -547,11 +571,13 @@ class AppDatabase {
     } catch (_) {}
   }
 
-  /// Rows waiting for submission.
-  int countPendingOfflineScrobbles() {
+  /// Rows waiting for submission for [service].
+  int countPendingOfflineScrobbles({String service = 'lastfm'}) {
     try {
-      final rows =
-          _db.select('SELECT COUNT(*) AS c FROM offline_scrobbles;');
+      final rows = _db.select(
+        'SELECT COUNT(*) AS c FROM offline_scrobbles WHERE service = ?;',
+        [service],
+      );
       return (rows.first['c'] as int?) ?? 0;
     } catch (_) {
       return 0;
@@ -1194,7 +1220,7 @@ class AppDatabase {
     final result = <({String title, String artist, int atMillis, int durationMs})>[];
     try {
       final rows = _db.select(
-        'SELECT artist, track, timestamp, duration FROM offline_scrobbles;',
+        "SELECT artist, track, timestamp, duration FROM offline_scrobbles WHERE service = 'lastfm';",
       );
       final playTimes = <String, List<int>>{};
       for (final p in plays) {

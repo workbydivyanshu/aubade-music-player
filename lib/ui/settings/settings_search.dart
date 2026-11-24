@@ -137,6 +137,22 @@ const List<SettingsSearchEntry> kSettingsSearchCatalog = [
     keywords: ['scrobble', 'percent', 'now playing', 'threshold'],
   ),
   SettingsSearchEntry(
+    section: 'lastfm',
+    groupId: 'other-scrobblers',
+    groupTitle: 'Other scrobblers',
+    keywords: [
+      'listenbrainz',
+      'libre.fm',
+      'librefm',
+      'maloja',
+      'koito',
+      'gnu fm',
+      'self-hosted',
+      'token',
+      'scrobble',
+    ],
+  ),
+  SettingsSearchEntry(
     section: 'general',
     groupId: 'behaviour',
     groupTitle: 'Behaviour',

@@ -1,8 +1,11 @@
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../features/library/vault_analytics.dart';
+import '../../features/scrobblers/extra_scrobblers.dart';
 import '../components/artwork.dart' show WaveArtwork;
+import '../components/buttons.dart' show WaveIconButton;
 import '../components/states.dart';
 import '../theme/motion.dart';
 import '../theme/tokens.dart';
@@ -58,6 +61,7 @@ Widget _body(BuildContext context, VaultAnalytics v, BoxConstraints c) {
     ..add(
       WaveEntrance(index: 0, rise: 10, child: _header(context)),
     )
+    ..add(const _OtherScrobblerStrips())
     ..add(const SizedBox(height: WaveSpacing.x8))
     ..add(WaveEntrance(index: 1, child: _heroTile(context, v)))
     ..add(const SizedBox(height: 14));
@@ -950,3 +954,90 @@ String _fmtCount(int n) {
 /// Hour index → 'HH:00' for the peak label.
 String _hourLabel(int hour) =>
     '${hour.toString().padLeft(2, '0')}:00';
+
+/// One strip per connected ListenBrainz / Libre.fm account: identity,
+/// lifetime listens, profile view.
+class _OtherScrobblerStrips extends ConsumerWidget {
+  const _OtherScrobblerStrips();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    ref.watch(extraScrobblersRevisionProvider);
+    final connected = [
+      for (final s in ref.watch(extraScrobblersProvider).services)
+        if (s.connected) s,
+    ];
+    if (connected.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: WaveSpacing.x8),
+      child: Column(
+        children: [
+          for (final s in connected)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: waveIsDark(context)
+                      ? Colors.white.withValues(alpha: 0.05)
+                      : WaveColors.lightSurface,
+                  borderRadius: WaveRadius.floatingRadius,
+                  border: Border.all(color: waveDivider(context), width: 0.8),
+                ),
+                child: Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: WaveRadius.artworkRadius,
+                      child: WaveArtwork(
+                        url: '',
+                        size: 32,
+                        label: s.username,
+                        upgrade: false,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              '@${s.username}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: WaveType.trackTitle.copyWith(
+                                  fontSize: 14, fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(
+                            switch (
+                                ref.watch(extraScrobbleCountProvider(s.name))) {
+                              AsyncData(:final value?) =>
+                                '${_fmtCount(value)} scrobbles · all time · ${s.name}',
+                              _ => s.name,
+                            },
+                            style: WaveType.meta
+                                .copyWith(color: waveTextSecondary(context)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    WaveIconButton(
+                      tooltip: 'View profile on ${s.name}',
+                      icon:
+                          const Icon(FluentIcons.open_in_new_window, size: 14),
+                      onPressed: () => launchUrl(s.profileUrl,
+                          mode: LaunchMode.externalApplication),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+

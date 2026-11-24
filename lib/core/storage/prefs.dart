@@ -57,6 +57,12 @@ const Map<String, String> _legacyPrefKeys = {
   'lw_cd_mode': 'aubade_cd_mode',
   'lw_discord_rich_presence': 'aubade_discord_rich_presence',
   'lw_addon_urls': 'aubade_addon_urls',
+  'lw_lb_token': 'aubade_lb_token',
+  'lw_lb_user': 'aubade_lb_user',
+  'lw_lb_server': 'aubade_lb_server',
+  'lw_librefm_session': 'aubade_librefm_session',
+  'lw_librefm_user': 'aubade_librefm_user',
+  'lw_librefm_server': 'aubade_librefm_server',
 };
 
 /// Per-track lyrics offsets carry a dynamic suffix, so they are migrated
@@ -575,6 +581,34 @@ class Prefs {
     if (percent != null) {
       await _sp.setInt('aubade_scrobble_percent', percent.clamp(25, 90));
     }
+  }
+
+  // -- Other scrobblers (ListenBrainz, Libre.fm) ----------------------------
+  // Empty server = the public service. Cleared together on disconnect.
+  String get listenBrainzToken => _sp.getString('aubade_lb_token') ?? '';
+  String get listenBrainzUser => _sp.getString('aubade_lb_user') ?? '';
+  String get listenBrainzServer => _sp.getString('aubade_lb_server') ?? '';
+  Future<void> setListenBrainz({
+    required String token,
+    required String user,
+    required String server,
+  }) async {
+    await _sp.setString('aubade_lb_token', token);
+    await _sp.setString('aubade_lb_user', user);
+    await _sp.setString('aubade_lb_server', server);
+  }
+
+  String get libreFmSession => _sp.getString('aubade_librefm_session') ?? '';
+  String get libreFmUser => _sp.getString('aubade_librefm_user') ?? '';
+  String get libreFmServer => _sp.getString('aubade_librefm_server') ?? '';
+  Future<void> setLibreFm({
+    required String session,
+    required String user,
+    required String server,
+  }) async {
+    await _sp.setString('aubade_librefm_session', session);
+    await _sp.setString('aubade_librefm_user', user);
+    await _sp.setString('aubade_librefm_server', server);
   }
 
   // -- YouTube Music --------------------------------------------------------

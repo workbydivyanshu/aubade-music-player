@@ -7,6 +7,7 @@ import '../../core/network/lastfm_crypto.dart';
 import '../../core/storage/app_database.dart';
 import '../../core/storage/prefs.dart';
 import '../search/shared_providers.dart';
+import '../scrobblers/extra_scrobblers.dart';
 import 'auth_repository.dart';
 
 /// Scrobble result classification.
@@ -23,6 +24,7 @@ class ScrobbleRepository {
   final LastFmApiService _api;
   final Prefs _prefs;
   final AppDatabase _db;
+  final ExtraScrobblers? _extras;
 
   String _lastNowPlayingKey = '';
   DateTime _lastWrite = DateTime.fromMillisecondsSinceEpoch(0);
@@ -34,7 +36,7 @@ class ScrobbleRepository {
   /// burst of scrobble batches. Leftovers wait for the next flush.
   static const int _flushRowCap = 500;
 
-  ScrobbleRepository(this._api, this._prefs, this._db);
+  ScrobbleRepository(this._api, this._prefs, this._db, [this._extras]);
 
   String get _apiKey => _prefs.lastFmApiKey;
   String get _apiSecret => _prefs.lastFmApiSecret;
@@ -95,6 +97,9 @@ class ScrobbleRepository {
     String albumArtist = '',
     int durationSec = 0,
   }) async {
+    if (_prefs.scrobbleNowPlaying) {
+      _extras?.nowPlaying(Listen(artist: artist, track: track, album: album));
+    }
     if (!_prefs.scrobblerEnabled ||
         !_prefs.scrobbleNowPlaying ||
         !_canWrite) {
@@ -137,6 +142,12 @@ class ScrobbleRepository {
     required int timestampSec,
     int durationSec = 0,
   }) async {
+    _extras?.submit(Listen(
+      artist: artist,
+      track: track,
+      album: album,
+      startedAtSec: timestampSec,
+    ));
     if (!_prefs.scrobblerEnabled) return ScrobbleOutcome.noSession;
     if (!_canWrite) {
       _db.insertOfflineScrobble(
@@ -224,6 +235,7 @@ class ScrobbleRepository {
   /// accepts the batch; a refused batch or a dead session (error 9)
   /// leaves the rest queued for the next attempt.
   Future<ScrobbleOutcome> flushQueue() async {
+    unawaited(_extras?.flushAll());
     if (!_canWrite) return ScrobbleOutcome.noSession;
     var attempted = 0;
     while (attempted < _flushRowCap) {
@@ -275,5 +287,6 @@ final scrobbleRepositoryProvider = Provider<ScrobbleRepository>((ref) {
     ref.watch(lastFmApiProvider),
     ref.watch(prefsProvider),
     ref.watch(databaseProvider),
+    ref.watch(extraScrobblersProvider),
   );
 });

@@ -23,6 +23,7 @@ import '../../features/audio_output/output_controller.dart';
 import '../../features/audio_output/output_path_sheet.dart';
 import '../../features/lyrics/desktop_lyrics_painter.dart';
 import '../../features/lyrics/lyrics_providers.dart';
+import '../../features/scrobblers/extra_scrobblers.dart';
 import '../../features/player/playback_service.dart';
 import '../../features/performance/performance_controller.dart';
 import '../../features/smtc/smtc_service.dart';
@@ -1206,6 +1207,180 @@ class _ScrobblerState extends ConsumerState<_Scrobbler> {
   }
 }
 
+/// ListenBrainz and Libre.fm: each listen goes to every connected service,
+/// with or without Last.fm. Server fields take self-hosted instances.
+class _OtherScrobblers extends ConsumerStatefulWidget {
+  const _OtherScrobblers();
+  @override
+  ConsumerState<_OtherScrobblers> createState() => _OtherScrobblersState();
+}
+
+class _OtherScrobblersState extends ConsumerState<_OtherScrobblers> {
+  final _lbToken = TextEditingController();
+  final _lbServer = TextEditingController();
+  final _lfUser = TextEditingController();
+  final _lfPass = TextEditingController();
+  final _lfServer = TextEditingController();
+  bool _busy = false;
+  String? _lbError;
+  String? _lfError;
+
+  @override
+  void dispose() {
+    for (final c in [_lbToken, _lbServer, _lfUser, _lfPass, _lfServer]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _run(Future<void> Function() job) async {
+    setState(() => _busy = true);
+    try {
+      await job();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+      ref.read(extraScrobblersRevisionProvider.notifier).state++;
+    }
+  }
+
+  Widget _connected(String name, String user, String server, VoidCallback onOff) {
+    return Row(
+      children: [
+        Icon(FluentIcons.completed, size: 14, color: waveAccent(context)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            '$name connected as @$user${server.isEmpty ? '' : ' · $server'}',
+            style: WaveType.trackTitle,
+          ),
+        ),
+        WaveButton(onPressed: _busy ? null : onOff, child: const Text('Disconnect')),
+      ],
+    );
+  }
+
+  Widget _error(String? message) => message == null
+      ? const SizedBox.shrink()
+      : Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(message,
+              style: WaveType.meta.copyWith(color: WaveColors.danger)),
+        );
+
+  @override
+  Widget build(BuildContext context) {
+    ref.watch(extraScrobblersRevisionProvider);
+    final prefs = ref.watch(prefsProvider);
+    final lb = ref.read(listenBrainzProvider);
+    final lf = ref.read(libreFmProvider);
+    return _Group(
+      id: 'other-scrobblers',
+      title: 'Other scrobblers',
+      subtitle: 'ListenBrainz and Libre.fm, alongside or instead of Last.fm',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text('ListenBrainz', style: WaveType.trackTitle),
+          const SizedBox(height: 6),
+          if (lb.connected)
+            _connected('ListenBrainz', lb.username, prefs.listenBrainzServer,
+                () => _run(lb.disconnect))
+          else ...[
+            Text(
+              'Paste your user token from listenbrainz.org/settings. Leave the '
+              'server empty unless you self-host (Maloja, Koito, …).',
+              style: WaveType.meta.copyWith(color: waveTextSecondary(context)),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: TextBox(
+                    controller: _lbToken,
+                    placeholder: 'User token',
+                    obscureText: true,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 2,
+                  child: TextBox(
+                    controller: _lbServer,
+                    placeholder: 'Server (optional)',
+                  ),
+                ),
+                const SizedBox(width: 8),
+                WaveFilledButton(
+                  onPressed: _busy
+                      ? null
+                      : () => _run(() async {
+                            final err = await lb.connect(_lbToken.text,
+                                server: _lbServer.text);
+                            if (mounted) setState(() => _lbError = err);
+                          }),
+                  child: const Text('Connect'),
+                ),
+              ],
+            ),
+            _error(_lbError),
+          ],
+          const SizedBox(height: 16),
+          const Text('Libre.fm', style: WaveType.trackTitle),
+          const SizedBox(height: 6),
+          if (lf.connected)
+            _connected('Libre.fm', lf.username, prefs.libreFmServer,
+                () => _run(lf.disconnect))
+          else ...[
+            Text(
+              'Sign in with your Libre.fm account. The server field takes '
+              'other GNU FM instances.',
+              style: WaveType.meta.copyWith(color: waveTextSecondary(context)),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: TextBox(controller: _lfUser, placeholder: 'Username'),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextBox(
+                    controller: _lfPass,
+                    placeholder: 'Password',
+                    obscureText: true,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextBox(
+                    controller: _lfServer,
+                    placeholder: 'Server (optional)',
+                  ),
+                ),
+                const SizedBox(width: 8),
+                WaveFilledButton(
+                  onPressed: _busy
+                      ? null
+                      : () => _run(() async {
+                            final err = await lf.connect(
+                                _lfUser.text, _lfPass.text,
+                                server: _lfServer.text);
+                            if (err == null) _lfPass.clear();
+                            if (mounted) setState(() => _lfError = err);
+                          }),
+                  child: const Text('Sign in'),
+                ),
+              ],
+            ),
+            _error(_lfError),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 /// Addon sources: personal addon URLs replace the built-in lossless
 /// backend as the lossless tier (see [AddonApi]). Quota meters fill
 /// in after playback; unknown until the first stream attempt.
@@ -2100,6 +2275,8 @@ class _LastFm extends ConsumerWidget {
         const _ApiKeys(),
         const SizedBox(height: 8),
         _Scrobbler(onUpdate: onUpdate),
+        const SizedBox(height: 8),
+        const _OtherScrobblers(),
       ],
     );
   }

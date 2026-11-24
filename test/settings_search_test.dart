@@ -57,6 +57,7 @@ void main() {
         'Last.fm connection',
         'API keys',
         'Last.fm scrobbling',
+        'Other scrobblers',
         'Behaviour',
         'Performance',
         'Open with',
@@ -67,7 +68,7 @@ void main() {
       ]) {
         expect(titles, contains(must));
       }
-      expect(titles, hasLength(20));
+      expect(titles, hasLength(21));
     });
   });
 
