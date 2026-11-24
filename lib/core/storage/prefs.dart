@@ -462,6 +462,12 @@ class Prefs {
   bool get wordByWord => _sp.getBool('aubade_word_by_word') ?? true;
   Future<void> setWordByWord(bool v) => _sp.setBool('aubade_word_by_word', v);
 
+  /// Desktop karaoke typography: 'classic' | 'glow' | 'dynamic' |
+  /// 'smooth' | 'minimal'. Unknown values fall back to classic.
+  String get lyricsStyle => _sp.getString('aubade_lyrics_style') ?? 'classic';
+  Future<void> setLyricsStyle(String v) =>
+      _sp.setString('aubade_lyrics_style', v);
+
   /// Primary lyrics provider id (`auto` default). Explicit picks get a
   /// head start; the rest of the chain stays as automatic fallback.
   String get lyricsProviderId =>

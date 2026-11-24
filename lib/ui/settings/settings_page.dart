@@ -21,6 +21,7 @@ import '../../features/library/local_library_providers.dart';
 import '../../features/settings/theme_controller.dart';
 import '../../features/audio_output/output_controller.dart';
 import '../../features/audio_output/output_path_sheet.dart';
+import '../../features/lyrics/desktop_lyrics_painter.dart';
 import '../../features/lyrics/lyrics_providers.dart';
 import '../../features/player/playback_service.dart';
 import '../../features/performance/performance_controller.dart';
@@ -1103,6 +1104,30 @@ class _Lyrics extends ConsumerWidget {
           const SizedBox(height: 4),
           Text(
             LyricsProviderId.fromId(prefs.lyricsProviderId).subtitle,
+            style: WaveType.meta,
+          ),
+          const SizedBox(height: 14),
+          const Text('Karaoke style', style: WaveType.trackTitle),
+          const SizedBox(height: 6),
+          ComboBox<String>(
+            value: LyricsKineticStyle.fromId(prefs.lyricsStyle).name,
+            items: [
+              for (final style in LyricsKineticStyle.values)
+                ComboBoxItem(
+                  value: style.name,
+                  child: Text(style.label),
+                ),
+            ],
+            onChanged: (v) {
+              if (v != null) {
+                onUpdate((p) => p.setLyricsStyle(v));
+              }
+            },
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Classic, Glow, Dynamic, Smooth, or Minimal. Applies to the '
+            'active word-synced line.',
             style: WaveType.meta,
           ),
         ],
