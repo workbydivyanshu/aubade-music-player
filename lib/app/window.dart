@@ -22,9 +22,11 @@ Future<void> setupWindow() async {
     // libmpv's thread is still calling into Dart (startup crash).
     await windowManager.setPreventClose(true);
     const options = WindowOptions(
-      size: Size(1360, 860),
+      // The native runner sets the default window size (1360x860) and
+      // owns initial geometry. Omitting size/center prevents an async
+      // mid-startup resize on Linux Wayland that desynchronizes the
+      // EGL surface from the GTK window and drops pointer events.
       minimumSize: Size(1024, 640),
-      center: true,
       title: 'Aubade',
       titleBarStyle: TitleBarStyle.hidden,
       // Neutral graphite — matches WaveColors.background so first frame

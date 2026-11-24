@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,6 +14,7 @@ import '../../core/network/network_monitor.dart';
 import '../../design_system/fluent/aubade_scrollbar.dart';
 import '../../features/lastfm/auth_repository.dart';
 import '../../features/lastfm/scrobble_repository.dart';
+import '../../ui/app_shell/wave_resize_area.dart';
 import '../../ui/theme/fluent_theme.dart';
 import '../../ui/theme/haze.dart';
 import '../../ui/theme/tokens.dart';
@@ -168,8 +170,20 @@ class _AubadeAppState extends ConsumerState<AubadeApp> {
             // present — that blur sample on the open frame is the hitch
             // on every toolbar popup. The app is opaque dark anyway, so
             // solid flyouts read identically. (Own haze system untouched.)
-            builder: (context, child) =>
-                DisableAcrylic(child: child ?? const SizedBox.shrink()),
+            builder: (context, child) {
+              final content =
+                  DisableAcrylic(child: child ?? const SizedBox.shrink());
+              if (Platform.isLinux) {
+                final isMaximized = ref.watch(windowMaximizedProvider);
+                return WaveWindowResizeArea(
+                  enabled: !isMaximized,
+                  edgeSize: 4.0,
+                  cornerSize: 14.0,
+                  child: content,
+                );
+              }
+              return content;
+            },
           ),
         ),
       ),

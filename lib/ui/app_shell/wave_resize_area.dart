@@ -1,5 +1,4 @@
 import 'package:fluent_ui/fluent_ui.dart';
-import 'package:flutter/gestures.dart';
 import 'package:window_manager/window_manager.dart';
 
 /// Interactive edge and corner resize overlay for frameless desktop
@@ -9,7 +8,7 @@ import 'package:window_manager/window_manager.dart';
 /// compositor no longer offers resize grips. This overlays four thin edge
 /// handles and four larger corner handles with the matching system
 /// cursors, and starts a native resize through
-/// [WindowManager.startResizing] on primary-button press.
+/// [WindowManager.startResizing] on drag pan.
 ///
 /// The overlay is purely additive: it paints nothing, and every call is
 /// best-effort so a missing platform backend degrades to a normal window
@@ -50,18 +49,12 @@ class WaveWindowResizeArea extends StatelessWidget {
     double? width,
     double? height,
   }) {
-    return Listener(
-      behavior: HitTestBehavior.translucent,
-      onPointerDown: (event) {
-        if (event.buttons == kPrimaryMouseButton) _startResize(edge);
-      },
-      child: MouseRegion(
-        cursor: cursor,
-        child: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onPanStart: (_) => _startResize(edge),
-          child: SizedBox(width: width, height: height),
-        ),
+    return MouseRegion(
+      cursor: cursor,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onPanStart: (_) => _startResize(edge),
+        child: SizedBox(width: width, height: height),
       ),
     );
   }
