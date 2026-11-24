@@ -29,6 +29,12 @@ The v1.1.1 full release wave (Waves 1–6) was implemented via clean-room adapta
 Verification on the complete v1.1.1 tree:
 - `flutter analyze --no-fatal-infos`: 0 issues found.
 - `flutter test --exclude-tags=live`: 751 tests passed, 8 skipped.
+- Mainline CI run `45409199243` passed all jobs (Linux, Windows, macOS).
+- Fast-forward merge `mainline` -> `main` at `2c5711a`.
+- Annotated release tag `v1.1.1` published.
+- Tag release pipeline `45413625458` passed all jobs (Linux, Windows, macOS, Publish GitHub Release).
+- All 7 expected assets verified present with SHA-256 digests (`deb`, `rpm`, `AppImage`, `setup.exe`, `portable.zip`, `macos-arm64.zip`, `macos.dmg`).
+- 5 redirect endpoints verified: `/download/fedora` -> `aubade_1.1.1_x86_64.rpm`, `/download/windows` -> `aubade_1.1.1_windows-x86_64-setup.exe`, `/download/macos` -> `aubade_1.1.1_macos.dmg`, `/download/linux` -> `aubade_1.1.1_x86_64.AppImage`, `/download/debian` -> `aubade_1.1.1_amd64.deb` (all HTTP 302 -> 200).
 
 ## Shipped v1.1.0 release wave
 
