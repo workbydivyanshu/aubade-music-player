@@ -19,7 +19,17 @@ The v1.1.2 hotfix resolves Linux Wayland launch surface synchronization and poin
 | Fix | Aubade commit | Implementation Summary |
 |---|---|---|
 | Native runner launch size & resize grab guard | `0a330c6` | Set default GTK window size to 1360x860 in `my_application.cc`, remove mid-flight startup `size`/`center` from `window.dart` to prevent Wayland OpenGL frame timeout and pointer drop; restrict `WaveWindowResizeArea` to `onPanStart` (drag only) and mount inside router `builder` |
-| Version bump & release prep | `v1.1.2` | Bump `pubspec.yaml` to `1.1.2+1`, `kFallbackAppVersion` to `'1.1.2'`, `README.md` download links and release badge |
+| Version bump & release prep | `1513b92` (`v1.1.2`) | Bump `pubspec.yaml` to `1.1.2+1`, `kFallbackAppVersion` to `'1.1.2'`, `README.md` download links and release badge |
+
+Verification on the complete v1.1.2 tree:
+- `flutter analyze --no-fatal-infos`: 0 issues found.
+- `flutter test --exclude-tags=live`: 751 tests passed, 8 skipped.
+- Mainline CI run `45425002204` passed all jobs (Linux, Windows, macOS).
+- Fast-forward merge `mainline` -> `main` at `1513b92`.
+- Annotated release tag `v1.1.2` published.
+- Tag release pipeline `45430646445` passed all jobs (Linux, Windows, macOS, Publish GitHub Release).
+- All 7 expected assets verified present with SHA-256 digests (`deb`, `rpm`, `AppImage`, `setup.exe`, `portable.zip`, `macos-arm64.zip`, `macos.dmg`).
+- 5 redirect endpoints verified: `/download/fedora` -> `aubade_1.1.2_x86_64.rpm`, `/download/windows` -> `aubade_1.1.2_windows-x86_64-setup.exe`, `/download/macos` -> `aubade_1.1.2_macos.dmg`, `/download/linux` -> `aubade_1.1.2_x86_64.AppImage`, `/download/debian` -> `aubade_1.1.2_amd64.deb` (all HTTP 302 -> 200).
 
 ## Shipped v1.1.1 release wave
 
