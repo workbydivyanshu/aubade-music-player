@@ -13,6 +13,10 @@ import '../../core/artwork/artwork_resolver.dart';
 import '../../core/audio/stream_models.dart';
 import '../../features/lyrics/karaoke_lyrics_view.dart';
 import '../../features/player/playback_service.dart';
+import 'immersive.dart';
+import 'now_playing_full_bleed_view.dart';
+import 'now_playing_minimal_view.dart';
+import 'now_playing_style.dart';
 import '../components/ambient.dart';
 import '../components/animated_artwork_video.dart';
 import '../components/artwork.dart';
@@ -120,6 +124,7 @@ class _WaveNowPlayingPageState extends ConsumerState<WaveNowPlayingPage> {
     );
 
     final visualizerEnabled = ref.watch(visualizerEnabledProvider);
+    final nowPlayingStyle = ref.watch(nowPlayingStyleProvider);
 
     if (current == null) {
       return Center(
@@ -205,118 +210,146 @@ class _WaveNowPlayingPageState extends ConsumerState<WaveNowPlayingPage> {
         onHover: (_) => _resetIdleTimer(),
         child: Stack(
           children: [
-            // Background Visualizer
             Positioned.fill(
-              child: RepaintBoundary(
-                child: _NowAmbient(artworkUrl: current.artworkUrl),
-              ),
+              child: ColoredBox(color: waveBackground(context)),
             ),
 
-            // Main Layout Content
-            Positioned.fill(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final isWide = constraints.maxWidth > 860;
+            if (nowPlayingStyle == NowPlayingStyle.fullBleed)
+              Positioned.fill(
+                child: NowPlayingFullBleedView(track: current),
+              )
+            else if (nowPlayingStyle == NowPlayingStyle.minimal)
+              Positioned.fill(
+                child: NowPlayingMinimalView(
+                  track: current,
+                  onClose: () {
+                    if (ref.read(nowPlayingImmersiveProvider)) {
+                      ref.read(nowPlayingImmersiveProvider.notifier).state =
+                          false;
+                      return;
+                    }
+                    if (context.canPop()) {
+                      context.pop();
+                    } else {
+                      context.go('/songs');
+                    }
+                  },
+                ),
+              )
+            else ...[
+              // Background Visualizer
+              Positioned.fill(
+                child: RepaintBoundary(
+                  child: _NowAmbient(artworkUrl: current.artworkUrl),
+                ),
+              ),
 
-                  return Column(
-                    children: [
-                      // Top Actions Bar (Fadeable on idle)
-                      AnimatedOpacity(
-                        duration: const Duration(milliseconds: 350),
-                        opacity: _controlsIdle ? 0.0 : 1.0,
-                        child: ExcludeFocus(
-                          excluding: _controlsIdle,
-                          child: IgnorePointer(
-                            ignoring: _controlsIdle,
-                            child: _TopActionsBar(
-                              lyricsVisible: _lyricsVisible,
-                              queueVisible: _queueVisible,
-                              visualizerEnabled: visualizerEnabled,
-                              onToggleLyrics: () {
-                                _resetIdleTimer();
-                                setState(() => _lyricsVisible = !_lyricsVisible);
-                              },
-                              onToggleQueue: () {
-                                _resetIdleTimer();
-                                setState(() => _queueVisible = !_queueVisible);
-                              },
-                              onToggleVisualizer: () {
-                                _resetIdleTimer();
-                                ref.read(visualizerEnabledProvider.notifier).toggle();
-                              },
-                              onClose: () {
-                                if (context.canPop()) {
-                                  context.pop();
-                                } else {
-                                  context.go('/songs');
-                                }
-                              },
+              // Main Layout Content
+              Positioned.fill(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isWide = constraints.maxWidth > 860;
+
+                    return Column(
+                      children: [
+                        // Top Actions Bar (Fadeable on idle)
+                        AnimatedOpacity(
+                          duration: const Duration(milliseconds: 350),
+                          opacity: _controlsIdle ? 0.0 : 1.0,
+                          child: ExcludeFocus(
+                            excluding: _controlsIdle,
+                            child: IgnorePointer(
+                              ignoring: _controlsIdle,
+                              child: _TopActionsBar(
+                                lyricsVisible: _lyricsVisible,
+                                queueVisible: _queueVisible,
+                                visualizerEnabled: visualizerEnabled,
+                                onToggleLyrics: () {
+                                  _resetIdleTimer();
+                                  setState(() => _lyricsVisible = !_lyricsVisible);
+                                },
+                                onToggleQueue: () {
+                                  _resetIdleTimer();
+                                  setState(() => _queueVisible = !_queueVisible);
+                                },
+                                onToggleVisualizer: () {
+                                  _resetIdleTimer();
+                                  ref.read(visualizerEnabledProvider.notifier).toggle();
+                                },
+                                onClose: () {
+                                  if (context.canPop()) {
+                                    context.pop();
+                                  } else {
+                                    context.go('/songs');
+                                  }
+                                },
+                              ),
                             ),
                           ),
                         ),
-                      ),
 
-                      // Body
-                      Expanded(
-                        child: isWide
-                            ? _DesktopDualPane(
-                                track: current,
-                                lyricsVisible: _lyricsVisible,
-                                maxHeight: constraints.maxHeight - 64,
-                                maxWidth: constraints.maxWidth,
-                              )
-                            : _NarrowCenteredPane(
-                                track: current,
-                                lyricsVisible: _lyricsVisible,
-                              ),
-                      ),
-                    ],
-                  );
-                },
-              ),
-            ),
-
-            // Scrim backdrop when queue drawer is active
-            Positioned.fill(
-              child: IgnorePointer(
-                ignoring: !_queueVisible,
-                child: AnimatedOpacity(
-                  duration: WaveMotion.normal,
-                  curve: Curves.easeOutCubic,
-                  opacity: _queueVisible ? 1.0 : 0.0,
-                  child: GestureDetector(
-                    onTap: () => setState(() => _queueVisible = false),
-                    child: Container(
-                      color: Colors.black.withValues(alpha: 0.45),
-                    ),
-                  ),
+                        // Body
+                        Expanded(
+                          child: isWide
+                              ? _DesktopDualPane(
+                                  track: current,
+                                  lyricsVisible: _lyricsVisible,
+                                  maxHeight: constraints.maxHeight - 64,
+                                  maxWidth: constraints.maxWidth,
+                                )
+                              : _NarrowCenteredPane(
+                                  track: current,
+                                  lyricsVisible: _lyricsVisible,
+                                ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
-            ),
 
-            // Contextual Queue drawer smoothly sliding from right.
-            // Offstage when shut: skips paint/raster of the 8 image rows
-            // while closed (scroll offset preserved, no remount).
-            AnimatedPositioned(
-              duration: WaveMotion.normal,
-              curve: Curves.easeOutCubic,
-              top: 0,
-              bottom: 0,
-              right: _queueVisible ? 0 : -380,
-              width: 360,
-              child: ExcludeFocus(
-                excluding: !_queueVisible,
+              // Scrim backdrop when queue drawer is active
+              Positioned.fill(
                 child: IgnorePointer(
                   ignoring: !_queueVisible,
-                  child: Offstage(
-                    offstage: !_queueVisible,
-                    child: _queueDrawerCache ??= WaveQueuePanel(
-                      onClose: _closeQueueDrawer,
+                  child: AnimatedOpacity(
+                    duration: WaveMotion.normal,
+                    curve: Curves.easeOutCubic,
+                    opacity: _queueVisible ? 1.0 : 0.0,
+                    child: GestureDetector(
+                      onTap: () => setState(() => _queueVisible = false),
+                      child: Container(
+                        color: Colors.black.withValues(alpha: 0.45),
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
+
+              // Contextual Queue drawer smoothly sliding from right.
+              // Offstage when shut: skips paint/raster of the 8 image rows
+              // while closed (scroll offset preserved, no remount).
+              AnimatedPositioned(
+                duration: WaveMotion.normal,
+                curve: Curves.easeOutCubic,
+                top: 0,
+                bottom: 0,
+                right: _queueVisible ? 0 : -380,
+                width: 360,
+                child: ExcludeFocus(
+                  excluding: !_queueVisible,
+                  child: IgnorePointer(
+                    ignoring: !_queueVisible,
+                    child: Offstage(
+                      offstage: !_queueVisible,
+                      child: _queueDrawerCache ??= WaveQueuePanel(
+                        onClose: _closeQueueDrawer,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),

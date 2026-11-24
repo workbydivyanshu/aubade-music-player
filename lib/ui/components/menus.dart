@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:audiotags/audiotags.dart';
 import 'package:fluent_ui/fluent_ui.dart';
@@ -800,15 +801,18 @@ class WaveFlyoutPanel extends StatefulWidget {
   final List<WaveMenuEntry>? entries;
   final Widget? child;
   final double maxWidth;
+  final double? maxHeight;
   const WaveFlyoutPanel.items({
     super.key,
     required this.entries,
     this.maxWidth = 280,
+    this.maxHeight,
   }) : child = null;
   const WaveFlyoutPanel.child({
     super.key,
     required this.child,
     this.maxWidth = 280,
+    this.maxHeight,
   }) : entries = null;
   @override
   State<WaveFlyoutPanel> createState() => _WaveFlyoutPanelState();
@@ -950,9 +954,24 @@ class _WaveFlyoutPanelState extends State<WaveFlyoutPanel> {
       );
     }
 
+    final dark = waveIsDark(context);
+    final frosted = WaveSurfaceScope.liquidGlassOf(context);
+
+    final content = ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: widget.maxWidth,
+        maxHeight: widget.maxHeight ?? double.infinity,
+      ),
+      child: Padding(
+        padding:
+            const EdgeInsetsDirectional.symmetric(vertical: 2, horizontal: 4),
+        child: body,
+      ),
+    );
+
     final panel = Container(
       decoration: BoxDecoration(
-        color: theme.menuColor,
+        color: frosted ? null : theme.menuColor,
         borderRadius: BorderRadius.circular(7),
         boxShadow: const [
           BoxShadow(
@@ -967,13 +986,32 @@ class _WaveFlyoutPanelState extends State<WaveFlyoutPanel> {
           ),
         ],
       ),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: widget.maxWidth),
-        child: Padding(
-          padding:
-              const EdgeInsetsDirectional.symmetric(vertical: 2, horizontal: 4),
-          child: body,
-        ),
+      foregroundDecoration: frosted
+          ? BoxDecoration(
+              borderRadius: BorderRadius.circular(7),
+              border: Border.all(
+                color: (dark ? Colors.white : Colors.black)
+                    .withValues(alpha: dark ? 0.14 : 0.10),
+              ),
+            )
+          : null,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(7),
+        child: frosted
+            ? BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+                child: ColoredBox(
+                  // Neutral smoked glass film rather than waveSurfaceRaised so
+                  // Artwork/Custom themes never tint glassmorphism menus into
+                  // colorful translucent blocks.
+                  color: (dark
+                          ? const Color(0xFF141418)
+                          : const Color(0xFFF5F5F7))
+                      .withValues(alpha: dark ? 0.56 : 0.74),
+                  child: content,
+                ),
+              )
+            : content,
       ),
     );
 

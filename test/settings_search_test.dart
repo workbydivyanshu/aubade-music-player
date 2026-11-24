@@ -53,6 +53,7 @@ void main() {
         'Theme',
         'Haze material',
         'Surfaces',
+        'Now Playing style',
         'Timing',
         'Last.fm connection',
         'API keys',
@@ -68,7 +69,7 @@ void main() {
       ]) {
         expect(titles, contains(must));
       }
-      expect(titles, hasLength(21));
+      expect(titles, hasLength(22));
     });
   });
 

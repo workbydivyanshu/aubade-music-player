@@ -63,6 +63,7 @@ const Map<String, String> _legacyPrefKeys = {
   'lw_librefm_session': 'aubade_librefm_session',
   'lw_librefm_user': 'aubade_librefm_user',
   'lw_librefm_server': 'aubade_librefm_server',
+  'lw_now_playing_style': 'aubade_now_playing_style',
 };
 
 /// Per-track lyrics offsets carry a dynamic suffix, so they are migrated
@@ -661,6 +662,22 @@ class Prefs {
 
   Future<void> setVisualizerEnabled(bool v) =>
       _sp.setBool('aubade_visualizer_enabled', v);
+
+  /// Now Playing presentation style: 'fullBleed' (default edge-to-edge canvas + lyrics),
+  /// 'minimal' (sharp cover + duet lyrics), 'standard' (Old dual pane layout).
+  static const nowPlayingStyles = [
+    'fullBleed',
+    'minimal',
+    'standard',
+  ];
+  String get nowPlayingStyle {
+    final raw = _sp.getString('aubade_now_playing_style') ?? 'fullBleed';
+    return nowPlayingStyles.contains(raw) ? raw : 'fullBleed';
+  }
+  Future<void> setNowPlayingStyle(String style) => _sp.setString(
+        'aubade_now_playing_style',
+        nowPlayingStyles.contains(style) ? style : 'fullBleed',
+      );
 
   bool get cdMode => _sp.getBool('aubade_cd_mode') ?? false;
 

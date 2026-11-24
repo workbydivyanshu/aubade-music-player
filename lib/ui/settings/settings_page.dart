@@ -32,6 +32,7 @@ import '../components/ambient.dart' show ambientGlowEnabledProvider;
 import '../components/glass_panel.dart';
 import '../components/buttons.dart';
 import '../components/inputs.dart';
+import 'now_playing_style_picker.dart';
 import '../../features/presence/discord_presence_service.dart';
 import '../../features/updater/update_models.dart';
 import '../../features/updater/update_service.dart';
@@ -1058,6 +1059,13 @@ class _Appearance extends ConsumerWidget {
               ),
             ],
           ),
+        ),
+        const SizedBox(height: 8),
+        const _Group(
+          id: 'now-playing-style',
+          title: 'Now Playing style',
+          subtitle: 'Layout and presentation for the player screen',
+          child: NowPlayingStylePicker(),
         ),
       ],
     );

@@ -106,6 +106,20 @@ const List<SettingsSearchEntry> kSettingsSearchCatalog = [
     keywords: ['amoled', 'black', 'artwork', 'accent', 'glow'],
   ),
   SettingsSearchEntry(
+    section: 'appearance',
+    groupId: 'now-playing-style',
+    groupTitle: 'Now Playing style',
+    keywords: [
+      'now playing',
+      'player',
+      'style',
+      'full bleed',
+      'minimal',
+      'classic',
+      'layout',
+    ],
+  ),
+  SettingsSearchEntry(
     section: 'lyrics',
     groupId: 'lyrics-timing',
     groupTitle: 'Timing',
