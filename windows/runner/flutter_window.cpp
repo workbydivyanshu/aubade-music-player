@@ -103,6 +103,15 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // Marshalled SMTC press from its thread-pool callback: forward to Dart
+  // here, on the platform thread, before default handling.
+  if (message == aubade::SmtcChannel::kSmtcButtonMessage) {
+    if (smtc_channel_ && !destroying_) {
+      smtc_channel_->OnButtonMessage(wparam);
+    }
+    return 0;
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   // Never forward once destroy has begun: DestroyWindow() re-enters here
   // on the same thread while flutter_controller_ is being torn down.

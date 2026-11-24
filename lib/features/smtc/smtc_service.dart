@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/storage/prefs.dart';
 import '../player/playback_service.dart';
 import '../player/player_state.dart';
 
@@ -75,13 +76,18 @@ Map<String, Object>? smtcUpdateFor(PlayerSnapshot? prev, PlayerSnapshot next) {
   };
 }
 
-/// Windows System Media Transport Controls endpoint — the Windows
-/// counterpart to the MPRIS service on Linux.
+/// System media transport endpoint for Windows (SMTC) and macOS
+/// (Now Playing) — the counterpart to the MPRIS service on Linux.
 ///
 /// Pushes now-playing metadata + transport state to the native
-/// `aubade/smtc` channel (volume flyout, lock screen, Bluetooth,
+/// `aubade/smtc` channel (Windows: volume flyout, lock screen;
+/// macOS: menu bar Now Playing, Control Center; both: Bluetooth and
 /// hardware media keys) and routes button presses back into
-/// [PlaybackService]. Windows only; every failure degrades to silence.
+/// [PlaybackService]. Windows always publishes; macOS is opt-in via
+/// [Prefs.macosNowPlaying] because the system entry is user-visible.
+/// The native side lives in `windows/runner/smtc_channel.cpp` and
+/// `macos/Runner/NowPlayingChannel.swift`. Every failure degrades to
+/// silence.
 class SmtcService {
   final Ref _ref;
   final MethodChannel _channel = const MethodChannel('aubade/smtc');
@@ -93,22 +99,64 @@ class SmtcService {
 
   PlaybackService get _player => _ref.read(playbackServiceProvider.notifier);
 
+  /// Platforms whose runner implements the `aubade/smtc` channel.
+  bool get _supported => Platform.isWindows || Platform.isMacOS;
+
+  /// Windows always publishes; macOS only after the Now Playing opt-in.
+  bool get _enabled =>
+      Platform.isWindows ||
+      (Platform.isMacOS && _ref.read(prefsProvider).macosNowPlaying);
+
   Future<void> startup() async {
-    if (!Platform.isWindows || _disposed) return;
+    if (!_supported || _disposed) return;
     if (!_handlerSet) {
       _handlerSet = true;
       _channel.setMethodCallHandler(_onNativeCall);
     }
     _last = null;
+    if (!_enabled) {
+      // macOS opt-in off: make sure no earlier session's entry survives.
+      await _clearNative();
+      return;
+    }
+    onSnapshot(_ref.read(playbackServiceProvider));
+  }
+
+  /// Re-applies the macOS opt-in after the Settings toggle changes.
+  ///
+  /// Turning it off clears the system Now Playing entry immediately;
+  /// turning it on republishes the current snapshot. No-op on Windows,
+  /// whose SMTC endpoint is always on.
+  void refreshMacosOptIn() {
+    if (!Platform.isMacOS || _disposed) return;
+    if (!_handlerSet) {
+      _handlerSet = true;
+      _channel.setMethodCallHandler(_onNativeCall);
+    }
+    _last = null;
+    if (!_ref.read(prefsProvider).macosNowPlaying) {
+      unawaited(_clearNative());
+      return;
+    }
     onSnapshot(_ref.read(playbackServiceProvider));
   }
 
   void onSnapshot(PlayerSnapshot snap) {
-    if (!Platform.isWindows || _disposed) return;
+    if (!_enabled || _disposed) return;
     final update = smtcUpdateFor(_last, snap);
     _last = snap;
     if (update == null) return;
     unawaited(_channel.invokeMethod('update', update).catchError((_) {}));
+  }
+
+  /// Drops the macOS Now Playing entry; also used when opt-in is turned
+  /// off so Control Center stops showing a stale track.
+  Future<void> _clearNative() async {
+    try {
+      await _channel.invokeMethod('clear');
+    } catch (_) {
+      // Native side absent or the engine is tearing down: nothing to do.
+    }
   }
 
   Future<dynamic> _onNativeCall(MethodCall call) async {
@@ -137,6 +185,7 @@ class SmtcService {
   void dispose() {
     _disposed = true;
     _last = null;
+    if (Platform.isMacOS) unawaited(_clearNative());
   }
 }
 

@@ -23,6 +23,7 @@ import '../../features/audio_output/output_controller.dart';
 import '../../features/audio_output/output_path_sheet.dart';
 import '../../features/lyrics/lyrics_providers.dart';
 import '../../features/player/playback_service.dart';
+import '../../features/smtc/smtc_service.dart';
 import '../theme/tokens.dart';
 import '../components/ambient.dart' show ambientGlowEnabledProvider;
 import '../components/glass_panel.dart';
@@ -1711,6 +1712,22 @@ class _General extends ConsumerWidget {
                   ),
                 ],
               ),
+              if (Platform.isMacOS) ...[
+                const SizedBox(height: 8),
+                _SwitchRow(
+                  value: prefs.macosNowPlaying,
+                  onChanged: (v) async {
+                    await onUpdate((p) => p.setMacosNowPlaying(v));
+                    try {
+                      ref.read(smtcProvider).refreshMacosOptIn();
+                    } catch (_) {}
+                  },
+                  title: 'System Now Playing',
+                  subtitle:
+                      'Publish the current track to Control Center and the '
+                      'lock screen, and accept media keys. Off by default.',
+                ),
+              ],
             ],
           ),
         ),

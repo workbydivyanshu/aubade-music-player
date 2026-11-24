@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +10,7 @@ import '../core/artwork/animated_artwork_session.dart';
 import '../core/storage/prefs.dart';
 import '../features/player/playback_service.dart';
 import '../features/presence/discord_presence_service.dart';
+import '../ui/app_shell/wave_resize_area.dart';
 import '../ui/components/infobar_host.dart';
 
 /// App-scoped window + tray lifecycle owner.
@@ -41,6 +43,13 @@ class _WindowLifecycleState extends ConsumerState<WindowLifecycle>
     } catch (_) {}
     try {
       windowManager.addListener(this);
+    } catch (_) {}
+    // Seed the maximize flag before the first frame so a window that
+    // starts maximized never paints resize grips over the title bar.
+    try {
+      windowManager.isMaximized().then((m) {
+        if (mounted) ref.read(windowMaximizedProvider.notifier).state = m;
+      }).catchError((_) {});
     } catch (_) {}
   }
 
@@ -121,7 +130,25 @@ class _WindowLifecycleState extends ConsumerState<WindowLifecycle>
   void onWindowRestore() => _setWindowVisible(true);
 
   @override
-  void onWindowMaximize() => _setWindowVisible(true);
+  void onWindowMaximize() {
+    _setWindowVisible(true);
+    _setWindowMaximized(true);
+  }
+
+  @override
+  void onWindowUnmaximize() => _setWindowMaximized(false);
+
+  @override
+  void onWindowEnterFullScreen() => _setWindowMaximized(true);
+
+  @override
+  void onWindowLeaveFullScreen() => _setWindowMaximized(false);
+
+  void _setWindowMaximized(bool value) {
+    try {
+      ref.read(windowMaximizedProvider.notifier).state = value;
+    } catch (_) {}
+  }
 
   @override
   void onTrayMenuItemClick(MenuItem menuItem) {
@@ -166,8 +193,25 @@ class _WindowLifecycleState extends ConsumerState<WindowLifecycle>
   }
 
   @override
-  Widget build(BuildContext context) => widget.child;
+  Widget build(BuildContext context) {
+    // Frameless Linux windows lose their native border, so the compositor
+    // offers no resize grips. Overlay edge/corner handles for every route
+    // (including /welcome) unless the window is maximized/fullscreen.
+    // Windows and macOS keep native frame resizing.
+    if (!Platform.isLinux) return widget.child;
+    final maximized = ref.watch(windowMaximizedProvider);
+    return WaveWindowResizeArea(
+      enabled: !maximized,
+      edgeSize: 4.0,
+      cornerSize: 14.0,
+      child: widget.child,
+    );
+  }
 }
+
+/// True while the window is maximized or fullscreen. Linux resize grips
+/// are disabled in that state; every other platform ignores it.
+final windowMaximizedProvider = StateProvider<bool>((ref) => false);
 
 /// True while the OS window content is visible on screen. Karaoke tickers
 /// mute while minimized/tray-hidden via framework TickerMode (auto-resumes

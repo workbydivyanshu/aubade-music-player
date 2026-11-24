@@ -321,6 +321,14 @@ class Prefs {
   bool get closeToTray => _sp.getBool('aubade_close_to_tray') ?? true;
   Future<void> setCloseToTray(bool v) => _sp.setBool('aubade_close_to_tray', v);
 
+  // -- System media integration -------------------------------------------
+  /// Publish Now Playing to macOS Control Center / the lock screen and
+  /// accept media keys via `MPNowPlayingInfoCenter`. Off by default: the
+  /// system entry is opt-in. Windows SMTC is unaffected by this flag.
+  bool get macosNowPlaying => _sp.getBool('aubade_macos_now_playing') ?? false;
+  Future<void> setMacosNowPlaying(bool v) =>
+      _sp.setBool('aubade_macos_now_playing', v);
+
   // -- Playback behaviour -------------------------------------------------
   /// Keep playing similar tracks (endless radio) after a queue runs
   /// out. Default on — matches Spotify/YTM autoplay behaviour.

@@ -101,6 +101,12 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
   int _failedGeneration = -1;
   String _activeQueueKey = '';
   bool _lockSoftwareVolume = false;
+  // True only while a DAC's hardware gain is confirmed to own the level,
+  // so a later route change knows to restore software gain.
+  bool _hardwareVolume = false;
+  // The listener paused on purpose. Device invalidations, monitor standby
+  // and route-change EOFs must never be read as "resume" while this holds.
+  bool _userPaused = false;
   bool exclusiveApplied = false;
   String? wasapiError;
   String? _forcedAoFormat;
@@ -383,7 +389,10 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
       }),
       p.stream.volume.listen((v) {
         runGuarded('player.volume', () {
-          if (_lockSoftwareVolume) return;
+          // Hardware gain owns the level while a DAC is in charge; mpv is
+          // pinned at 100 there, so its echo must never overwrite the
+          // slider position the user actually set.
+          if (_lockSoftwareVolume || _hardwareVolume) return;
           state = state.copyWith(volume: (v / 100).clamp(0.0, 1.0));
         });
       }),
@@ -615,10 +624,14 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
       }
       return;
     }
+    // Toggling from "playing" is a user pause; toggling from "paused" is a
+    // user play. Either way the intent flag follows the call.
+    _userPaused = state.isPlaying;
     await _player?.playOrPause();
   }
 
   Future<void> playResume() async {
+    _userPaused = false;
     await ensurePlayer();
     if (state.current != null && state.stream == null) {
       final resumeAt = state.position;
@@ -632,6 +645,7 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
   }
 
   Future<void> pause() async {
+    _userPaused = true;
     await _player?.pause();
     _schedulePersist();
   }
@@ -641,9 +655,17 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     state = state.copyWith(position: position);
   }
 
+  /// Lets the volume slider drive libmpv again after a lock (used when a
+  /// DAC has no usable hardware volume).
+  Future<void> unlockSoftwareVolume() async {
+    _lockSoftwareVolume = false;
+    _hardwareVolume = false;
+  }
+
   Future<void> setVolume(double volume, {bool software = true}) async {
     final v = volume.clamp(0.0, 1.0);
     state = state.copyWith(volume: v);
+    _hardwareVolume = !software;
     if (!software || _lockSoftwareVolume) {
       await _player?.setVolume(100);
       return;
@@ -699,6 +721,11 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
       return;
     }
     _lockSoftwareVolume = lockSoftwareVolume;
+    if (!lockSoftwareVolume) {
+      // A previous hardware-volume session may have left mpv pinned at
+      // 100; the software path owns gain again from here.
+      _hardwareVolume = false;
+    }
     final player = _player;
     if (player == null) {
       exclusiveApplied = false;
@@ -768,6 +795,8 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
       } catch (_) {}
       if (lockSoftwareVolume) {
         await player.setVolume(100);
+      } else {
+        await player.setVolume(state.volume * 100);
       }
     }).catchError((e) {
       exclusiveApplied = false;
@@ -988,6 +1017,9 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     final totalSw = Stopwatch()..start();
     int resolveMs = 0;
     try {
+      // Every explicit open is a user play intent: clear any stale pause
+      // flag left by a route change before the new stream starts.
+      _userPaused = false;
       final track = state.queue[index];
       final wantedQueueKey = track.queueKey;
       _activeQueueKey = wantedQueueKey;
@@ -1688,6 +1720,13 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
   }
 
   Future<void> _onPlayerError() async {
+    // The listener paused. Device invalidation, monitor standby or a route
+    // change must not restart the track or blast audio through the new
+    // output; the user's pause outranks the error recovery path.
+    if (_userPaused) {
+      _crumb('player error while user paused -> ignoring auto-resume');
+      return;
+    }
     final track = state.current;
     final generation = _resolveGeneration;
     if (track == null || _resolving || state.error != null ||
@@ -1746,6 +1785,12 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
   }
 
   void _onTrackCompleted() {
+    // When paused, an audio endpoint disconnect or monitor sleep makes
+    // libmpv signal EOF. Never advance or retry while the user is paused.
+    if (_userPaused) {
+      _crumb('track completed while user paused -> ignoring premature eof');
+      return;
+    }
     if (_resolving || state.error != null) return;
     _flushScrobble(completed: true);
     if (state.duration - state.position > const Duration(seconds: 10)) {

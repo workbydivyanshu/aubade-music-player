@@ -170,6 +170,9 @@ class AudioOutputController extends StateNotifier<AudioOutputState> {
     final device = state.selected;
     final exclusive = state.exclusiveRequested;
     final hw = exclusive && (device?.hardwareVolume ?? false);
+    // One snapshot for the whole apply: configureWasapi and the volume
+    // hand-off must both use the level the slider currently shows.
+    final vol = _ref.read(playbackServiceProvider).volume;
     final source = _sourceOf(_ref.read(playbackServiceProvider).stream);
     final decision = source == null
         ? null
@@ -185,10 +188,28 @@ class AudioOutputController extends StateNotifier<AudioOutputState> {
       outputFormat: exclusive ? decision?.output : null,
     );
     if (hw) {
-      final vol = _ref.read(playbackServiceProvider).volume;
-      await _engine.setHardwareVolume(device!.id, vol);
-      wasapiLog('Hardware Volume: TRUE');
+      // The endpoint can refuse the write right after a route change while
+      // its session is still settling. Retry once, then fall back to
+      // software gain so the slider never goes dead.
+      bool ok = await _engine.setHardwareVolume(device!.id, vol);
+      if (!ok) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        ok = await _engine.setHardwareVolume(device.id, vol);
+      }
+      if (ok) {
+        await playback.setVolume(vol, software: false);
+        wasapiLog('Hardware Volume: TRUE');
+      } else {
+        wasapiLog(
+            'Hardware volume write failed - falling back to software volume');
+        await playback.unlockSoftwareVolume();
+        await playback.setVolume(vol, software: true);
+      }
     } else {
+      // A previous hardware-volume session may have left the software
+      // volume pinned at 100; release it before applying real gain.
+      await playback.unlockSoftwareVolume();
+      await playback.setVolume(vol, software: true);
       wasapiLog('Hardware Volume: FALSE');
     }
   }
@@ -231,14 +252,26 @@ class AudioOutputController extends StateNotifier<AudioOutputState> {
     wasapiLog('Device event: $reason $id');
     final selected = state.selectedId;
     await refreshDevices();
-    if (reason == 'removed' && selected.isNotEmpty && selected == id) {
+    // A removed selected device — or a default-route switch when the app
+    // follows the system default — means the output the user was hearing
+    // is gone. Pause FIRST, before any re-apply, so the new route never
+    // inherits a playing stream and blasts the speakers.
+    final wasRemoved = reason == 'removed' &&
+        (selected.isEmpty || selected == id);
+    final defaultMoved = reason == 'default' && selected.isEmpty;
+    if (wasRemoved || defaultMoved) {
       await _ref.read(playbackServiceProvider.notifier).pause();
       state = state.copyWith(
         path: state.path.copyWith(
           reason: BitPerfectReason.deviceUnavailable,
-          error: 'DAC disconnected',
+          error: selected.isNotEmpty
+              ? 'DAC disconnected'
+              : 'Audio device disconnected',
         ),
       );
+    }
+    if (wasRemoved || defaultMoved) {
+      await applyToPlayer();
       return;
     }
     if (reason == 'added' || reason == 'default' || reason == 'state') {
