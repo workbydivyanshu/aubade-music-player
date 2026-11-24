@@ -21,6 +21,7 @@ import '../audio_output/output_controller.dart';
 import '../mpris/mpris_service.dart';
 import '../smtc/smtc_service.dart';
 import '../presence/discord_presence_service.dart';
+import '../performance/performance_controller.dart';
 import 'theme_controller.dart';
 import '../library/stream_props_backfill.dart';
 
@@ -137,11 +138,15 @@ class _AubadeAppState extends ConsumerState<AubadeApp> {
       amoled: theme.amoled,
       liquidGlass: theme.liquidGlass,
       child: WaveHazeScope(
-        material: switch (theme.hazeMaterial) {
-          'haze' => WaveMaterialMode.haze,
-          'solid' => WaveMaterialMode.solid,
-          _ => WaveMaterialMode.automatic,
-        },
+        // Performance Mode locks every surface to the opaque solid path:
+        // no BackdropFilter, no blur sigma, no translucent shader work.
+        material: ref.watch(performanceModeProvider)
+            ? WaveMaterialMode.solid
+            : switch (theme.hazeMaterial) {
+                'haze' => WaveMaterialMode.haze,
+                'solid' => WaveMaterialMode.solid,
+                _ => WaveMaterialMode.automatic,
+              },
         intensity: switch (theme.hazeIntensity) {
           'low' => WaveHazeIntensity.low,
           'high' => WaveHazeIntensity.high,

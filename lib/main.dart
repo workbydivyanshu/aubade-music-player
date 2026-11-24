@@ -46,11 +46,13 @@ Future<void> main(List<String> args) async {
   // change, measured). Linux-only and best-effort; see
   // core/platform/allocator_tuning.dart.
   applyAllocatorTuning();
-  // High-performance desktop image cache budget: 384 MiB / 1,000 images
-  // prevents texture thrashing, frame drops, and repeat decoding while scrolling.
-  PaintingBinding.instance.imageCache.maximumSize = 1000;
+  // Desktop image cache budget: 128 MiB / 400 images.
+  // Caps resident decoded-RGBA buffers while keeping list scrolling and
+  // dock reuse smooth. 128 MiB is the ceiling: past it, trimming costs
+  // more than the decode it saves on desktop GPUs.
+  PaintingBinding.instance.imageCache.maximumSize = 400;
   PaintingBinding.instance.imageCache.maximumSizeBytes =
-      384 << 20; // 384 MiB
+      128 << 20; // 128 MiB
   // libmpv is deliberately NOT dlopened here. MediaKit.ensureInitialized()
   // just dlopens a multi-MB .so (media_kit's NativeLibrary), pure
   // first-frame latency, and nothing on the first frame needs it: the

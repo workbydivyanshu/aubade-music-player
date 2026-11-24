@@ -144,6 +144,21 @@ const List<SettingsSearchEntry> kSettingsSearchCatalog = [
   ),
   SettingsSearchEntry(
     section: 'general',
+    groupId: 'performance-mode',
+    groupTitle: 'Performance',
+    keywords: [
+      'performance',
+      'low spec',
+      'slow',
+      'lag',
+      'battery',
+      'blur',
+      'visualizer',
+      'aura',
+    ],
+  ),
+  SettingsSearchEntry(
+    section: 'general',
     groupId: 'open-with',
     groupTitle: 'Open with',
     keywords: ['default player', 'context menu', 'audio files'],

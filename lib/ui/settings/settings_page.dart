@@ -23,6 +23,7 @@ import '../../features/audio_output/output_controller.dart';
 import '../../features/audio_output/output_path_sheet.dart';
 import '../../features/lyrics/lyrics_providers.dart';
 import '../../features/player/playback_service.dart';
+import '../../features/performance/performance_controller.dart';
 import '../../features/smtc/smtc_service.dart';
 import '../theme/tokens.dart';
 import '../components/ambient.dart' show ambientGlowEnabledProvider;
@@ -1729,6 +1730,22 @@ class _General extends ConsumerWidget {
                 ),
               ],
             ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        _Group(
+          id: 'performance-mode',
+          title: 'Performance',
+          subtitle: 'One switch for slower machines',
+          child: _SwitchRow(
+            value: ref.watch(performanceModeProvider),
+            onChanged: (v) {
+              ref.read(performanceModeProvider.notifier).setPerformanceMode(v);
+            },
+            title: 'Performance Mode',
+            subtitle: 'Opaque surfaces instead of blur, no animated artwork '
+                'or aura, and visualizers paused. Playback and audio output '
+                'are untouched.',
           ),
         ),
         const SizedBox(height: 8),

@@ -496,6 +496,14 @@ class Prefs {
   Future<void> setDynamicNowPlaying(bool v) =>
       _sp.setBool('aubade_dynamic_now_playing', v);
 
+  // -- Performance Mode ---------------------------------------------------
+  /// One-click low-overhead mode: opaque surfaces (no backdrop blur),
+  /// no animated artwork/aura decode, and gated visualizers. Off by
+  /// default; the explicit choice is persisted across restarts.
+  bool get performanceMode => _sp.getBool('aubade_performance_mode') ?? false;
+  Future<void> setPerformanceMode(bool v) =>
+      _sp.setBool('aubade_performance_mode', v);
+
   // -- Haze / material (spec §42 — only settings that actually work) ------
   /// 'automatic' | 'haze' | 'solid'. Solid disables BackdropFilter
   /// everywhere (static tonal fallback); automatic uses Haze L1–L3 as

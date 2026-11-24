@@ -58,6 +58,7 @@ void main() {
         'API keys',
         'Last.fm scrobbling',
         'Behaviour',
+        'Performance',
         'Open with',
         'Offline',
         'Addon sources',
@@ -66,7 +67,7 @@ void main() {
       ]) {
         expect(titles, contains(must));
       }
-      expect(titles, hasLength(19));
+      expect(titles, hasLength(20));
     });
   });
 

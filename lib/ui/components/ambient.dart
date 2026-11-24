@@ -13,27 +13,40 @@ import 'package:palette_generator/palette_generator.dart';
 
 import '../../core/artwork/accent_extraction.dart';
 import '../../core/storage/prefs.dart';
+import '../../features/performance/performance_controller.dart';
 import '../theme/haze.dart';
 import '../theme/tokens.dart';
 
 /// Provider for visualizer toggle (persisted in preferences).
+///
+/// Performance Mode force-disables it without rewriting the user's saved
+/// preference: the switch in Settings keeps its position, and turning
+/// Performance Mode off restores the previous behaviour exactly.
 final visualizerEnabledProvider =
     StateNotifierProvider<VisualizerEnabledNotifier, bool>((ref) {
   final prefs = ref.watch(prefsProvider);
-  return VisualizerEnabledNotifier(prefs);
+  final perf = ref.watch(performanceModeProvider);
+  return VisualizerEnabledNotifier(prefs, forceDisabled: perf);
 });
 
 class VisualizerEnabledNotifier extends StateNotifier<bool> {
   final Prefs _prefs;
+  final bool forceDisabled;
 
-  VisualizerEnabledNotifier(this._prefs) : super(_prefs.visualizerEnabled);
+  VisualizerEnabledNotifier(this._prefs, {this.forceDisabled = false})
+      : super(forceDisabled ? false : _prefs.visualizerEnabled);
 
   void toggle() {
+    if (forceDisabled) return;
     state = !state;
     _prefs.setVisualizerEnabled(state);
   }
 
   void setEnabled(bool enabled) {
+    if (forceDisabled) {
+      _prefs.setVisualizerEnabled(enabled);
+      return;
+    }
     state = enabled;
     _prefs.setVisualizerEnabled(enabled);
   }
@@ -914,6 +927,11 @@ class WaveAmbientMesh extends ConsumerWidget {
 
     final isDark = waveIsDark(context);
     final visualizerEnabled = ref.watch(visualizerEnabledProvider);
+    // Performance Mode never pays for the baked-aura stage. The aura is
+    // static (no ticker), so "throttling" it means not painting it at all
+    // and letting the cheap palette-orb path take over.
+    final cinematicActive =
+        cinematic && !ref.watch(performanceModeProvider);
 
     // Toggle is a hard show/hide: no fade animation, no retained layers.
     if (!visualizerEnabled) return const SizedBox.shrink();
@@ -958,7 +976,7 @@ class WaveAmbientMesh extends ConsumerWidget {
     }
 
     final Widget content;
-    if (cinematic && artworkUrl.isNotEmpty) {
+    if (cinematicActive && artworkUrl.isNotEmpty) {
       content = Stack(
         children: [
           _AppleArtworkAura(artworkUrl: artworkUrl),

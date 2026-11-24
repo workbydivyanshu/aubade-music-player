@@ -246,14 +246,14 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
     // nothing before the first play needs media_kit. Idempotent, and the
     // only other Player() site (the motion-art session) calls it too.
     MediaKit.ensureInitialized();
-    // 16MiB demuxer buffer: lossless 24/192 peaks ~9Mbps, so this
-    // still holds ~14s of the heaviest stream while halving the
-    // 32MiB RSS cost (was the single biggest native allocation).
+    // 12MiB demuxer buffer: lossless 24/192 peaks ~9Mbps, so this still
+    // holds ~10s of the heaviest stream while returning 4MiB of native
+    // heap compared with the previous 16MiB setting.
     _player = Player(
       configuration: const PlayerConfiguration(
         vo: 'null',
         title: 'Aubade',
-        bufferSize: 16 * 1024 * 1024,
+        bufferSize: 12 * 1024 * 1024,
       ),
     );
     final created = _player!;
@@ -280,11 +280,11 @@ class PlaybackService extends StateNotifier<PlayerSnapshot> {
         } catch (_) {}
         try {
           await dyn.setProperty(
-              'demuxer-max-back-bytes', '${4 * 1024 * 1024}');
+              'demuxer-max-back-bytes', '${2 * 1024 * 1024}');
         } catch (_) {}
         try {
           await dyn.setProperty(
-              'demuxer-max-bytes', '${16 * 1024 * 1024}');
+              'demuxer-max-bytes', '${12 * 1024 * 1024}');
         } catch (_) {}
         try {
           await dyn.setProperty('vid', 'no');

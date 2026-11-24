@@ -7,6 +7,7 @@ import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../core/artwork/animated_artwork_session.dart';
+import '../core/platform/windows_memory.dart';
 import '../core/storage/prefs.dart';
 import '../features/player/playback_service.dart';
 import '../features/presence/discord_presence_service.dart';
@@ -34,6 +35,7 @@ class WindowLifecycle extends ConsumerStatefulWidget {
 class _WindowLifecycleState extends ConsumerState<WindowLifecycle>
     with TrayListener, WindowListener {
   bool _quitting = false;
+  Timer? _memoryHygieneTimer;
 
   @override
   void initState() {
@@ -51,6 +53,23 @@ class _WindowLifecycleState extends ConsumerState<WindowLifecycle>
         if (mounted) ref.read(windowMaximizedProvider.notifier).state = m;
       }).catchError((_) {});
     } catch (_) {}
+    _startMemoryHygiene();
+  }
+
+  /// Every 45s: drop image-cache entries no longer on screen and, on
+  /// Windows, hand reclaimable working-set pages back to the OS. Both are
+  /// cheap no-ops when there is nothing to free, and neither touches the
+  /// audio path or the current track's decoded artwork.
+  void _startMemoryHygiene() {
+    _memoryHygieneTimer?.cancel();
+    _memoryHygieneTimer = Timer.periodic(const Duration(seconds: 45), (_) {
+      try {
+        PaintingBinding.instance.imageCache.clearLiveImages();
+      } catch (_) {}
+      try {
+        trimWindowsWorkingSet();
+      } catch (_) {}
+    });
   }
 
   /// Ordered shutdown: await libmpv stop/dispose while Dart is alive
@@ -124,7 +143,14 @@ class _WindowLifecycleState extends ConsumerState<WindowLifecycle>
   }
 
   @override
-  void onWindowMinimize() => _setWindowVisible(false);
+  void onWindowMinimize() {
+    _setWindowVisible(false);
+    // Minimized is the cheapest moment to return pages: nothing is being
+    // rasterized and the user is looking elsewhere.
+    try {
+      trimWindowsWorkingSetThrottled();
+    } catch (_) {}
+  }
 
   @override
   void onWindowRestore() => _setWindowVisible(true);
@@ -183,6 +209,7 @@ class _WindowLifecycleState extends ConsumerState<WindowLifecycle>
 
   @override
   void dispose() {
+    _memoryHygieneTimer?.cancel();
     try {
       trayManager.removeListener(this);
     } catch (_) {}
